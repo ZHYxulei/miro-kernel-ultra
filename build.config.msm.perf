@@ -48,6 +48,7 @@ function build_defconfig_fragments() {
 	if [[ "${VARIANT}" =~ ^(perf|consolidate)$ ]]; then
 		apply_defconfig_fragment ${KERNEL_DIR}/arch/${ARCH}/configs/vendor/${MSM_ARCH}_perf.config vendor/${MSM_ARCH}-perf_defconfig
 		apply_defconfig_fragment ${KERNEL_DIR}/arch/${ARCH}/configs/vendor/${MSM_TARGET}_perf.config vendor/${MSM_TARGET}-perf_defconfig
+		apply_defconfig_fragment ${KERNEL_DIR}/arch/${ARCH}/configs/droidspaces.fragment
 		if [ "${VARIANT}" = perf ]; then
 			return
 		fi
