@@ -1,150 +1,119 @@
-# How do I submit patches to Android Common Kernels
+# Miro Kernel Ultra
 
-1. BEST: Make all of your changes to upstream Linux. If appropriate, backport to the stable releases.
-   These patches will be merged automatically in the corresponding common kernels. If the patch is already
-   in upstream Linux, post a backport of the patch that conforms to the patch requirements below.
-   - Do not send patches upstream that contain only symbol exports. To be considered for upstream Linux,
-additions of `EXPORT_SYMBOL_GPL()` require an in-tree modular driver that uses the symbol -- so include
-the new driver or changes to an existing driver in the same patchset as the export.
-   - When sending patches upstream, the commit message must contain a clear case for why the patch
-is needed and beneficial to the community. Enabling out-of-tree drivers or functionality is not
-a persuasive case.
+面向 `miro` 设备的 Android ARM64 内核项目，基于 Android Common Kernel
+`android15-6.6`，用于维护设备侧内核配置、驱动和构建流程。
 
-2. LESS GOOD: Develop your patches out-of-tree (from an upstream Linux point-of-view). Unless these are
-   fixing an Android-specific bug, these are very unlikely to be accepted unless they have been
-   coordinated with kernel-team@android.com. If you want to proceed, post a patch that conforms to the
-   patch requirements below.
+## 项目目标
 
-# Common Kernel patch requirements
+本项目主要围绕以下方向持续开发：
 
-- All patches must conform to the Linux kernel coding standards and pass `scripts/checkpatch.pl`
-- Patches shall not break gki_defconfig or allmodconfig builds for arm, arm64, x86, x86_64 architectures
-(see  https://source.android.com/setup/build/building-kernels)
-- If the patch is not merged from an upstream branch, the subject must be tagged with the type of patch:
-`UPSTREAM:`, `BACKPORT:`, `FROMGIT:`, `FROMLIST:`, or `ANDROID:`.
-- All patches must have a `Change-Id:` tag (see https://gerrit-review.googlesource.com/Documentation/user-changeid.html)
-- If an Android bug has been assigned, there must be a `Bug:` tag.
-- All patches must have a `Signed-off-by:` tag by the author and the submitter
+- 增加并完善 DroidSpaces 支持，为容器化 Android/Linux 用户空间提供所需的 IPC、namespace、网络过滤、用户命名空间和 TMPFS 能力。
+- 集成 SUSFS 支持，改善系统文件系统隐藏、隔离和兼容性能力。
+- 集成 ReSukiSU/KernelSU 支持，为内核级 root 管理和模块扩展提供基础。
+- 持续进行内核配置、驱动、稳定性、性能和功耗优化。
+- 在保证设备可启动性、GKI/KMI 兼容性和现有硬件功能的前提下，逐步完善设备支持。
 
-Additional requirements are listed below based on patch type
+## 项目状态
 
-## Requirements for backports from mainline Linux: `UPSTREAM:`, `BACKPORT:`
+| 功能 | 状态 |
+| --- | --- |
+| `miro` ARM64 内核构建 | 已支持 |
+| GKI `perf` / `consolidate` 构建变体 | 已支持 |
+| DroidSpaces 配置片段 | 已接入构建配置 |
+| SUSFS | 计划中 |
+| ReSukiSU/KernelSU | 计划中 |
+| 稳定性、性能和功耗优化 | 持续进行 |
 
-- If the patch is a cherry-pick from Linux mainline with no changes at all
-    - tag the patch subject with `UPSTREAM:`.
-    - add upstream commit information with a `(cherry picked from commit ...)` line
-    - Example:
-        - if the upstream commit message is
-```
-        important patch from upstream
+当前 DroidSpaces 配置位于
+[`arch/arm64/configs/droidspaces.fragment`](arch/arm64/configs/droidspaces.fragment)，
+并通过 [`build.config.msm.perf`](build.config.msm.perf) 使用项目现有的
+`apply_defconfig_fragment` 流程合并到 `perf` 和 `consolidate` 变体。
 
-        This is the detailed description of the important patch
+SUSFS 与 ReSukiSU/KernelSU 尚未在当前版本中实现。相关功能需要分别评估
+内核补丁、Kconfig、符号导出、ABI/KMI 影响以及设备启动兼容性，完成验证后
+再更新本 README 的状态。
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-```
->- then Joe Smith would upload the patch for the common kernel as
-```
-        UPSTREAM: important patch from upstream
+## 基本信息
 
-        This is the detailed description of the important patch
+- 设备目标：`miro`
+- Qualcomm 平台：`sun`
+- 架构：ARM64
+- Linux 基础版本：`6.6.30`
+- Android 内核分支：`android15-6.6`
+- 构建系统：Kleaf/Bazel，兼容 Android Kernel `build.config` 流程
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
+## 构建
 
-        Bug: 135791357
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry picked from commit c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
+本仓库依赖完整的 Android Kernel/Kleaf 工作区，通常作为 `msm-kernel` 目录
+使用，并需要同级的 `build`、`common`、`prebuilts` 等组件。它不是一个可以
+脱离 Android 构建环境直接生成设备镜像的独立 Linux 内核树。
 
-- If the patch requires any changes from the upstream version, tag the patch with `BACKPORT:`
-instead of `UPSTREAM:`.
-    - use the same tags as `UPSTREAM:`
-    - add comments about the changes under the `(cherry picked from commit ...)` line
-    - Example:
-```
-        BACKPORT: important patch from upstream
+常用 Kleaf 构建目标：
 
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-
-        Bug: 135791357
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry picked from commit c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
-        [joe: Resolved minor conflict in drivers/foo/bar.c ]
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
+```bash
+tools/bazel run //msm-kernel:miro_perf_dist
+tools/bazel run //msm-kernel:miro_consolidate_dist
 ```
 
-## Requirements for other backports: `FROMGIT:`, `FROMLIST:`,
+构建产物通常位于：
 
-- If the patch has been merged into an upstream maintainer tree, but has not yet
-been merged into Linux mainline
-    - tag the patch subject with `FROMGIT:`
-    - add info on where the patch came from as `(cherry picked from commit <sha1> <repo> <branch>)`. This
-must be a stable maintainer branch (not rebased, so don't use `linux-next` for example).
-    - if changes were required, use `BACKPORT: FROMGIT:`
-    - Example:
-        - if the commit message in the maintainer tree is
-```
-        important patch from upstream
-
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-```
->- then Joe Smith would upload the patch for the common kernel as
-```
-        FROMGIT: important patch from upstream
-
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-
-        Bug: 135791357
-        (cherry picked from commit 878a2fd9de10b03d11d2f622250285c7e63deace
-         https://git.kernel.org/pub/scm/linux/kernel/git/foo/bar.git test-branch)
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
+```text
+out/msm-kernel-miro-perf/dist/
+out/msm-kernel-miro-consolidate/dist/
 ```
 
+传统配置入口为：
 
-- If the patch has been submitted to LKML, but not accepted into any maintainer tree
-    - tag the patch subject with `FROMLIST:`
-    - add a `Link:` tag with a link to the submittal on lore.kernel.org
-    - add a `Bug:` tag with the Android bug (required for patches not accepted into
-a maintainer tree)
-    - if changes were required, use `BACKPORT: FROMLIST:`
-    - Example:
-```
-        FROMLIST: important patch from upstream
-
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-
-        Bug: 135791357
-        Link: https://lore.kernel.org/lkml/20190619171517.GA17557@someone.com/
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
+```text
+build.config.msm.miro
 ```
 
-## Requirements for Android-specific patches: `ANDROID:`
+该入口继承 `build.config.msm.sun`，默认使用 `consolidate` 变体，同时支持
+`perf` 变体。具体构建参数以当前 Android Kernel 工作区为准。
 
-- If the patch is fixing a bug to Android-specific code
-    - tag the patch subject with `ANDROID:`
-    - add a `Fixes:` tag that cites the patch with the bug
-    - Example:
-```
-        ANDROID: fix android-specific bug in foobar.c
+## DroidSpaces
 
-        This is the detailed description of the important fix
+DroidSpaces 配置片段当前启用以下能力：
 
-        Fixes: 1234abcd2468 ("foobar: add cool feature")
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
+- SysV IPC 和 POSIX message queues
+- IPC namespace、PID namespace 和 user namespace
+- `devtmpfs`
+- Enhanced NAT 所需的 Netfilter 匹配项
+- UFW 所需的 Netfilter target 和 match
+- Fail2ban 所需的 IP set
+- TMPFS POSIX ACL 和 extended attributes
 
-- If the patch is a new feature
-    - tag the patch subject with `ANDROID:`
-    - add a `Bug:` tag with the Android bug (required for android-specific features)
+配置会在构建阶段与 GKI 和设备配置片段合并，随后由 Kconfig 生成最终内核
+配置。若某个构建变体没有经过 `build.config.msm.perf`，则不会自动加载该
+片段。
 
+## 开发计划
+
+后续工作将按以下方向推进：
+
+1. 评估并集成 SUSFS，确认其与 Android 6.6、GKI/KMI 以及现有文件系统配置的兼容性。
+2. 评估并集成 ReSukiSU/KernelSU，处理 Kconfig、内核接口、符号导出和模块加载要求。
+3. 为新增功能补充独立配置片段和构建入口，避免影响默认 GKI 配置。
+4. 完善启动、模块、网络、容器和文件系统场景的验证。
+5. 持续优化性能、功耗、稳定性和构建可复现性。
+
+## 兼容性说明
+
+本项目处于持续开发阶段。新增内核功能可能影响 ABI/KMI、模块加载、系统启动
+和安全模型。合并任何功能前，应至少验证对应构建变体的配置生成、内核编译、
+模块打包和设备启动情况，并保留清晰的变更记录。
+
+## 贡献
+
+提交修改前请确认：
+
+- 变更范围与项目目标相关；
+- 配置片段使用现有构建系统的合并流程；
+- 不提交密钥、设备个人数据或构建产物；
+- 对配置、驱动和构建脚本修改进行对应验证；
+- 提交信息清楚说明变更内容和验证结果。
+
+## 免责声明
+
+本项目面向研究、开发和设备适配用途。刷写或使用自定义内核可能导致设备
+无法启动、数据丢失、功能异常或安全边界变化。请在充分备份并了解风险后使用。
