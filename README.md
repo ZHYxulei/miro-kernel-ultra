@@ -20,7 +20,7 @@
 | `miro` ARM64 内核构建 | 已支持 |
 | GKI `perf` / `consolidate` 构建变体 | 已支持 |
 | DroidSpaces 配置片段 | 已接入构建配置 |
-| SUSFS | 计划中 |
+| SUSFS | 已接入 |
 | ReSukiSU/KernelSU | 已接入（子模块） |
 | 稳定性、性能和功耗优化 | 持续进行 |
 
@@ -29,13 +29,15 @@
 并通过 [`build.config.msm.perf`](build.config.msm.perf) 使用项目现有的
 `apply_defconfig_fragment` 流程合并到 `perf` 和 `consolidate` 变体。
 
-SUSFS 尚未在当前版本中实现。相关功能需要评估内核补丁、Kconfig、符号导出、
-ABI/KMI 影响以及设备启动兼容性，完成验证后再更新本 README 的状态。
+SUSFS 已集成到内核树中。SUSFS（Super User File System）提供内核级 root
+隐藏和进程隔离能力，包括可疑路径隐藏、挂载隐藏、kstat 伪造、uname 伪造、
+cmdline/bootconfig 伪造、open redirect 和内存映射隐藏等功能。SUSFS 补丁
+源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
+`gki-android15-6.6` 分支，ReSukiSU 内置 SUSFS 支持作为 inline hook 方式。
 
 ReSukiSU/KernelSU 已作为 git 子模块接入，源码位于 `KernelSU/`（上游
 `ReSukiSU/ReSukiSU`），内核驱动通过符号链接 `drivers/kernelsu -> ../KernelSU/kernel`
-接入驱动树，并在 `gki_defconfig` 中启用了 `CONFIG_KSU`、`CONFIG_KSU_SUSFS`
-和 `CONFIG_KSU_MANUAL_HOOK`。
+接入驱动树，并在 `gki_defconfig` 中启用了 `CONFIG_KSU` 和 `CONFIG_KSU_SUSFS`。
 
 ## 基本信息
 
@@ -136,17 +138,55 @@ ReSukiSU/KernelSU 通过 git 子模块方式接入：
 - **内核配置**（在 [`gki_defconfig`](arch/arm64/configs/gki_defconfig) 中启用）：
   - `CONFIG_KPROBE_EVENTS` — kprobe 事件支持
   - `CONFIG_KSU` — KernelSU 核心
-  - `CONFIG_KSU_SUSFS` — SUSFS 集成接口
-  - `CONFIG_KSU_MANUAL_HOOK` — 手动 hook 点
+  - `CONFIG_KSU_SUSFS` — SUSFS inline hook 模式（ReSukiSU 三选一 hook 方式之一）
+
+`CONFIG_KSU_SUSFS` 与 `CONFIG_KSU_MANUAL_HOOK` 互斥（Kconfig `choice`），
+当前选择 SUSFS inline hook 模式，由 susfs4ksu 补丁提供内核侧 hook 点。
 
 克隆仓库后必须执行 `git submodule update --init --recursive` 以拉取子模块，
 否则 `drivers/kernelsu` 符号链接将无法解析，构建会失败。
+
+## SUSFS
+
+SUSFS（Super User File System）是 KernelSU 的 root 隐藏内核补丁，提供以下能力：
+
+| 功能 | Kconfig 选项 | 说明 |
+| --- | --- | --- |
+| 路径隐藏 | `CONFIG_KSU_SUSFS_SUS_PATH` | 隐藏用户定义路径及其子路径 |
+| 挂载隐藏 | `CONFIG_KSU_SUSFS_SUS_MOUNT` | 隐藏可疑挂载，伪造 mnt_id |
+| kstat 伪造 | `CONFIG_KSU_SUSFS_SUS_KSTAT` | 伪造文件/目录的 kstat |
+| uname 伪造 | `CONFIG_KSU_SUSFS_SPOOF_UNAME` | 伪造 uname 返回值 |
+| 日志控制 | `CONFIG_KSU_SUSFS_ENABLE_LOG` | 内核 SUSFS 日志开关 |
+| 符号隐藏 | `CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS` | 从 /proc/kallsyms 隐藏符号 |
+| cmdline 伪造 | `CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG` | 伪造 /proc/bootconfig 或 /proc/cmdline |
+| 路径重定向 | `CONFIG_KSU_SUSFS_OPEN_REDIRECT` | 将目标路径重定向到另一路径 |
+| 内存映射隐藏 | `CONFIG_KSU_SUSFS_SUS_MAP` | 从 proc maps 隐藏 mmapped 文件 |
+
+### 集成方式
+
+SUSFS 补丁源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
+`gki-android15-6.6` 分支，按照其 README 指引集成：
+
+- **新增文件**：`fs/susfs.c`、`include/linux/susfs.h`、`include/linux/susfs_def.h`
+- **内核补丁**：`50_add_susfs_in_gki-android15-6.6.patch` 修改 24 个内核文件，
+  在 syscall 路径插入 SUSFS hook（fs/exec.c、fs/namei.c、fs/namespace.c、
+  security/selinux/ 等）
+- **手动适配**：4 处 hunk 因 Xiaomi 内核 include 顺序差异手动修复
+  （fs/namespace.c、fs/proc/base.c、fs/proc/task_mmu.c、mm/memory.c）
+- **ABI 文件**：已删除 `android/abi_gki_protected_exports_aarch64`
+  （susfs4ksu README step 11 要求，否则 WiFi 等模块可能不工作）
+- **KernelSU 侧补丁**：跳过 `10_enable_susfs_for_ksu.patch`
+  （ReSukiSU 已内置 SUSFS 支持，该补丁仅适用于原版 weishu KernelSU）
+
+所有 SUSFS 子功能在 ReSukiSU 的 Kconfig 中默认为 `y`，由 `CONFIG_KSU_SUSFS=y`
+统一激活。构建时 ReSukiSU 的 `inline_hook_check.mk` 会自动验证内核 hook 点
+是否存在，缺失则编译报错。
 
 ## 开发计划
 
 后续工作将按以下方向推进：
 
-1. 评估并集成 SUSFS，确认其与 Android 6.6、GKI/KMI 以及现有文件系统配置的兼容性。
+1. 验证 SUSFS 内核编译和设备启动兼容性，确认 GKI/KMI 影响。
 2. 为新增功能补充独立配置片段和构建入口，避免影响默认 GKI 配置。
 3. 完善启动、模块、网络、容器和文件系统场景的验证。
 4. 持续优化性能、功耗、稳定性和构建可复现性。
