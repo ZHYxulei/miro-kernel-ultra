@@ -35,6 +35,12 @@
 #endif
 #include <asm/unaligned.h>
 
+/* Bypass FORTIFY_SOURCE __write_overflow_field false positives when
+ * zero-initialising netlink message payloads obtained via nlmsg_data().
+ * The buffer size is already validated by nlmsg_put()/nlmsg_new(), but
+ * the compiler cannot see through the netlink accessor macros. */
+#define unsafe_memset_tmp(dst, val, bytes) __underlying_memset(dst, val, bytes)
+
 static int verify_one_alg(struct nlattr **attrs, enum xfrm_attr_type_t type,
 			  struct netlink_ext_ack *extack)
 {
@@ -897,7 +903,7 @@ out:
 
 static void copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 {
-	memset(p, 0, sizeof(*p));
+	unsafe_memset_tmp(p, 0, sizeof(*p));
 	memcpy(&p->id, &x->id, sizeof(p->id));
 	memcpy(&p->sel, &x->sel, sizeof(p->sel));
 	memcpy(&p->lft, &x->lft, sizeof(p->lft));
@@ -954,7 +960,7 @@ static int copy_user_offload(struct xfrm_dev_offload *xso, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	xuo = nla_data(attr);
-	memset(xuo, 0, sizeof(*xuo));
+	unsafe_memset_tmp(xuo, 0, sizeof(*xuo));
 	xuo->ifindex = xso->dev->ifindex;
 	if (xso->dir == XFRM_DEV_OFFLOAD_IN)
 		xuo->flags = XFRM_OFFLOAD_INBOUND;
@@ -985,7 +991,7 @@ static int copy_to_user_auth(struct xfrm_algo_auth *auth, struct sk_buff *skb)
 	strncpy(algo->alg_name, auth->alg_name, sizeof(algo->alg_name));
 
 	if (redact_secret && auth->alg_key_len)
-		memset(algo->alg_key, 0, (auth->alg_key_len + 7) / 8);
+		unsafe_memset_tmp(algo->alg_key, 0, (auth->alg_key_len + 7) / 8);
 	else
 		memcpy(algo->alg_key, auth->alg_key,
 		       (auth->alg_key_len + 7) / 8);
@@ -997,7 +1003,7 @@ static int copy_to_user_auth(struct xfrm_algo_auth *auth, struct sk_buff *skb)
 	ap = nla_data(nla);
 	memcpy(ap, auth, sizeof(struct xfrm_algo_auth));
 	if (redact_secret && auth->alg_key_len)
-		memset(ap->alg_key, 0, (auth->alg_key_len + 7) / 8);
+		unsafe_memset_tmp(ap->alg_key, 0, (auth->alg_key_len + 7) / 8);
 	else
 		memcpy(ap->alg_key, auth->alg_key,
 		       (auth->alg_key_len + 7) / 8);
@@ -1019,7 +1025,7 @@ static int copy_to_user_aead(struct xfrm_algo_aead *aead, struct sk_buff *skb)
 	ap->alg_icv_len = aead->alg_icv_len;
 
 	if (redact_secret && aead->alg_key_len)
-		memset(ap->alg_key, 0, (aead->alg_key_len + 7) / 8);
+		unsafe_memset_tmp(ap->alg_key, 0, (aead->alg_key_len + 7) / 8);
 	else
 		memcpy(ap->alg_key, aead->alg_key,
 		       (aead->alg_key_len + 7) / 8);
@@ -1040,7 +1046,7 @@ static int copy_to_user_ealg(struct xfrm_algo *ealg, struct sk_buff *skb)
 	ap->alg_key_len = ealg->alg_key_len;
 
 	if (redact_secret && ealg->alg_key_len)
-		memset(ap->alg_key, 0, (ealg->alg_key_len + 7) / 8);
+		unsafe_memset_tmp(ap->alg_key, 0, (ealg->alg_key_len + 7) / 8);
 	else
 		memcpy(ap->alg_key, ealg->alg_key,
 		       (ealg->alg_key_len + 7) / 8);
@@ -1072,7 +1078,7 @@ static int copy_to_user_encap(struct xfrm_encap_tmpl *ep, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	uep = nla_data(nla);
-	memset(uep, 0, sizeof(*uep));
+	unsafe_memset_tmp(uep, 0, sizeof(*uep));
 
 	uep->encap_type = ep->encap_type;
 	uep->encap_sport = ep->encap_sport;
@@ -1901,7 +1907,7 @@ static void copy_from_user_policy(struct xfrm_policy *xp, struct xfrm_userpolicy
 
 static void copy_to_user_policy(struct xfrm_policy *xp, struct xfrm_userpolicy_info *p, int dir)
 {
-	memset(p, 0, sizeof(*p));
+	unsafe_memset_tmp(p, 0, sizeof(*p));
 	memcpy(&p->sel, &xp->selector, sizeof(p->sel));
 	memcpy(&p->lft, &xp->lft, sizeof(p->lft));
 	memcpy(&p->curlft, &xp->curlft, sizeof(p->curlft));
@@ -2024,7 +2030,7 @@ static int copy_to_user_tmpl(struct xfrm_policy *xp, struct sk_buff *skb)
 		struct xfrm_user_tmpl *up = &vec[i];
 		struct xfrm_tmpl *kp = &xp->xfrm_vec[i];
 
-		memset(up, 0, sizeof(*up));
+		unsafe_memset_tmp(up, 0, sizeof(*up));
 		memcpy(&up->id, &kp->id, sizeof(up->id));
 		up->family = kp->encap_family;
 		memcpy(&up->saddr, &kp->saddr, sizeof(up->saddr));
@@ -2070,7 +2076,7 @@ static int copy_to_user_policy_type(u8 type, struct sk_buff *skb)
 	struct xfrm_userpolicy_type upt;
 
 	/* Sadly there are two holes in struct xfrm_userpolicy_type */
-	memset(&upt, 0, sizeof(upt));
+	unsafe_memset_tmp(&upt, 0, sizeof(upt));
 	upt.type = type;
 
 	return nla_put(skb, XFRMA_POLICY_TYPE, sizeof(upt), &upt);
@@ -2416,7 +2422,7 @@ static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct 
 		return -EMSGSIZE;
 
 	id = nlmsg_data(nlh);
-	memset(&id->sa_id, 0, sizeof(id->sa_id));
+	unsafe_memset_tmp(&id->sa_id, 0, sizeof(id->sa_id));
 	memcpy(&id->sa_id.daddr, &x->id.daddr, sizeof(x->id.daddr));
 	id->sa_id.spi = x->id.spi;
 	id->sa_id.family = x->props.family;
@@ -2872,7 +2878,7 @@ static int copy_to_user_migrate(const struct xfrm_migrate *m, struct sk_buff *sk
 {
 	struct xfrm_user_migrate um;
 
-	memset(&um, 0, sizeof(um));
+	unsafe_memset_tmp(&um, 0, sizeof(um));
 	um.proto = m->proto;
 	um.mode = m->mode;
 	um.reqid = m->reqid;
@@ -2890,7 +2896,7 @@ static int copy_to_user_kmaddress(const struct xfrm_kmaddress *k, struct sk_buff
 {
 	struct xfrm_user_kmaddress uk;
 
-	memset(&uk, 0, sizeof(uk));
+	unsafe_memset_tmp(&uk, 0, sizeof(uk));
 	uk.family = k->family;
 	uk.reserved = k->reserved;
 	memcpy(&uk.local, &k->local, sizeof(uk.local));
@@ -2925,7 +2931,7 @@ static int build_migrate(struct sk_buff *skb, const struct xfrm_migrate *m,
 
 	pol_id = nlmsg_data(nlh);
 	/* copy data from selector, dir, and type to the pol_id */
-	memset(pol_id, 0, sizeof(*pol_id));
+	unsafe_memset_tmp(pol_id, 0, sizeof(*pol_id));
 	memcpy(&pol_id->sel, sel, sizeof(pol_id->sel));
 	pol_id->dir = dir;
 
@@ -3363,7 +3369,7 @@ static int xfrm_notify_sa(struct xfrm_state *x, const struct km_event *c)
 		struct nlattr *attr;
 
 		id = nlmsg_data(nlh);
-		memset(id, 0, sizeof(*id));
+		unsafe_memset_tmp(id, 0, sizeof(*id));
 		memcpy(&id->daddr, &x->id.daddr, sizeof(id->daddr));
 		id->spi = x->id.spi;
 		id->family = x->props.family;
@@ -3636,7 +3642,7 @@ static int xfrm_notify_policy(struct xfrm_policy *xp, int dir, const struct km_e
 		struct nlattr *attr;
 
 		id = nlmsg_data(nlh);
-		memset(id, 0, sizeof(*id));
+		unsafe_memset_tmp(id, 0, sizeof(*id));
 		id->dir = dir;
 		if (c->data.byid)
 			id->index = xp->index;
