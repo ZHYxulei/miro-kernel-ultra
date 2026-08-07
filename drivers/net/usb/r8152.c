@@ -1498,7 +1498,7 @@ static void ocp_write_dword(struct r8152 *tp, u16 type, u16 index, u32 data)
 	generic_ocp_write(tp, index, BYTE_EN_DWORD, sizeof(tmp), &tmp, type);
 }
 
-static u16 ocp_read_word(struct r8152 *tp, u16 type, u16 index)
+static noinline u16 ocp_read_word(struct r8152 *tp, u16 type, u16 index)
 {
 	u32 data;
 	__le32 tmp;
@@ -1517,7 +1517,7 @@ static u16 ocp_read_word(struct r8152 *tp, u16 type, u16 index)
 	return (u16)data;
 }
 
-static void ocp_write_word(struct r8152 *tp, u16 type, u16 index, u32 data)
+static noinline void ocp_write_word(struct r8152 *tp, u16 type, u16 index, u32 data)
 {
 	u32 mask = 0xffff;
 	__le32 tmp;
@@ -1576,7 +1576,7 @@ static void ocp_write_byte(struct r8152 *tp, u16 type, u16 index, u32 data)
 	generic_ocp_write(tp, index, byen, sizeof(tmp), &tmp, type);
 }
 
-static u16 ocp_reg_read(struct r8152 *tp, u16 addr)
+static noinline u16 ocp_reg_read(struct r8152 *tp, u16 addr)
 {
 	u16 ocp_base, ocp_index;
 
@@ -1590,7 +1590,7 @@ static u16 ocp_reg_read(struct r8152 *tp, u16 addr)
 	return ocp_read_word(tp, MCU_TYPE_PLA, ocp_index);
 }
 
-static void ocp_reg_write(struct r8152 *tp, u16 addr, u16 data)
+static noinline void ocp_reg_write(struct r8152 *tp, u16 addr, u16 data)
 {
 	u16 ocp_base, ocp_index;
 
@@ -5164,7 +5164,7 @@ static void rtl8152_fw_mac_apply(struct r8152 *tp, struct fw_mac *mac)
 	dev_dbg(&tp->intf->dev, "successfully applied %s\n", mac->info);
 }
 
-static void rtl8152_apply_firmware(struct r8152 *tp, bool power_cut)
+static noinline void rtl8152_apply_firmware(struct r8152 *tp, bool power_cut)
 {
 	struct rtl_fw *rtl_fw = &tp->rtl_fw;
 	const struct firmware *fw;
@@ -7349,7 +7349,7 @@ static void r8153c_init(struct r8152 *tp)
 	tp->coalesce = 15000;	/* 15 us */
 }
 
-static void r8156_hw_phy_cfg(struct r8152 *tp)
+static noinline void r8156_hw_phy_cfg(struct r8152 *tp)
 {
 	u32 ocp_data;
 	u16 data;
@@ -7699,7 +7699,7 @@ static void r8156_hw_phy_cfg(struct r8152 *tp)
 	set_bit(PHY_RESET, &tp->flags);
 }
 
-static void r8156b_hw_phy_cfg(struct r8152 *tp)
+static noinline void r8156b_hw_phy_cfg(struct r8152 *tp)
 {
 	u32 ocp_data;
 	u16 data;
