@@ -5840,7 +5840,7 @@ struct mca_sysfs_attr_info dwc3_msm_sysfs_field_tbl[] = {
 	mca_sysfs_attr_ro(dwc3_msm_sysfs, 0440, DWC3_MSM_PROP_SUPER_SPEED, super_speed),
 };
 
-static ssize_t dwc3_msm_sysfs_show(struct device *dev,
+static ssize_t __maybe_unused dwc3_msm_sysfs_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct mca_sysfs_attr_info *attr_info;

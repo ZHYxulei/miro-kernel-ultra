@@ -28,6 +28,9 @@
 #   JOBS              Override number of parallel jobs (default: nproc)
 #   KERNEL_NAME       Override kernel name shown in AnyKernel3
 #   OUT_DIR           Override output directory (default: out)
+#   USE_CCACHE        Set to 1 to enable ccache (default: auto-detect)
+#   CCACHE_DIR        Override ccache directory (default: ~/.ccache)
+#   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
 #
 
 set -e
@@ -88,6 +91,32 @@ setup_toolchain() {
             error "GCC_PATH directory does not exist: ${GCC_PATH}"
             exit 1
         fi
+    fi
+
+    # ccache support: speeds up rebuilds significantly
+    local use_ccache="${USE_CCACHE:-auto}"
+    if [ "$use_ccache" = "auto" ]; then
+        if command -v ccache >/dev/null 2>&1; then
+            use_ccache=1
+        else
+            use_ccache=0
+        fi
+    fi
+    if [ "$use_ccache" = "1" ]; then
+        if ! command -v ccache >/dev/null 2>&1; then
+            error "USE_CCACHE=1 but ccache not found. Install: apt install ccache"
+            exit 1
+        fi
+        export CCACHE_DIR="${CCACHE_DIR:-${HOME}/.ccache}"
+        mkdir -p "${CCACHE_DIR}"
+        # Prepend ccache to PATH so it wraps clang
+        export PATH="$(dirname $(command -v ccache)):${PATH}"
+        # Tell kernel build to use ccache
+        export CC="ccache clang"
+        export CCACHE_COMPRESS=1
+        local ccache_stats=$(ccache -s 2>/dev/null | grep "cache hit" || echo "new")
+        log "ccache enabled (dir: ${CCACHE_DIR})"
+        log "  Run 'ccache -s' to see stats, 'ccache -M 50G' to set max size"
     fi
 }
 
@@ -282,8 +311,13 @@ make_defconfig() {
 }
 
 build_kernel() {
-    log "Building kernel..."
-    make "${MAKE_ARGS[@]}" Image modules dtbs
+    if [ "${FAST_BUILD}" = "1" ]; then
+        log "Building kernel (fast: Image + dtbs only, no modules)..."
+        make "${MAKE_ARGS[@]}" Image dtbs
+    else
+        log "Building kernel (Image + modules + dtbs)..."
+        make "${MAKE_ARGS[@]}" Image modules dtbs
+    fi
     log "Kernel build completed in $(elapsed)"
 }
 
@@ -472,6 +506,7 @@ Commands:
   help        Show this help message
   defconfig   Generate .config (merge gki_defconfig + vendor fragments)
   kernel      Build kernel (defconfig + Image + modules + dtbs)
+  fast        Build kernel fast (defconfig + Image + dtbs only, no modules)
   all         Build kernel, install modules, and copy outputs to out/dist
   zip         Build kernel and package AnyKernel3 flashable zip
   package     Package AnyKernel3 zip from existing out/dist outputs
@@ -487,10 +522,23 @@ Environment variables:
   JOBS              Override number of parallel jobs (default: nproc)
   KERNEL_NAME       Override kernel name shown in AnyKernel3 installer
   OUT_DIR           Override output directory (default: out)
+  USE_CCACHE        Set to 1 to enable ccache (default: auto-detect)
+  CCACHE_DIR        Override ccache directory (default: ~/.ccache)
+  FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
+
+Tips for faster builds:
+  1. Install ccache:  apt install ccache && ccache -M 50G
+     - First build: normal speed. Subsequent builds: 3-5x faster.
+  2. Use 'fast' command:  bash build.sh fast
+     - Skips modules (~40% less compile time)
+  3. Put out/ on tmpfs (RAM disk):
+     mkdir -p /tmp/build && OUT_DIR=/tmp/build bash build.sh all
+  4. Increase jobs:  JOBS=$(nproc) bash build.sh all
 
 Examples:
   bash build.sh zip                                    # Full build + flashable zip
   bash build.sh all                                    # Full build without packaging
+  bash build.sh fast                                   # Quick build (no modules)
   bash build.sh kernel                                 # Just build kernel
   bash build.sh defconfig                              # Just generate config
   bash build.sh package                                # Re-package zip from existing build
@@ -499,7 +547,8 @@ Examples:
   bash build.sh deepclean                              # Remove all build artifacts
   bash build.sh mrproper                               # Full source tree clean
   CLANG_PATH=/opt/clang/bin bash build.sh zip          # Build with custom clang
-  CLANG_PATH=/opt/clang/bin GCC_PATH=/opt/gcc/bin bash build.sh all
+  USE_CCACHE=0 bash build.sh all                       # Disable ccache
+  FAST_BUILD=1 bash build.sh zip                        # Fast zip (no modules in zip)
 EOF
 }
 
@@ -521,6 +570,15 @@ main() {
             make_defconfig
             ;;
         kernel)
+            check_prerequisites
+            init_submodules
+            clean_source_tree
+            make_defconfig
+            build_kernel
+            log "Total time: $(elapsed)"
+            ;;
+        fast)
+            FAST_BUILD=1
             check_prerequisites
             init_submodules
             clean_source_tree
