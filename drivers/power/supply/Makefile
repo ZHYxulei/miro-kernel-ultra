@@ -112,5 +112,5 @@ obj-$(CONFIG_CHARGER_SURFACE)	+= surface_charger.o
 obj-$(CONFIG_BATTERY_UG3105)	+= ug3105_battery.o
 # obj-$(CONFIG_QTI_BATTERY_CHARGER)	+= qti_battery_charger.o
 obj-$(CONFIG_CHARGER_QCOM_SMB2)	+= qcom_pmi8998_charger.o
-obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca/
+# obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca/
 obj-$(CONFIG_QCOM_POWER_SUPPLY)	+= qcom/
