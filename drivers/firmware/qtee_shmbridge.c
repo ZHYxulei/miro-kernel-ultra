@@ -314,7 +314,8 @@ int32_t qtee_shmbridge_register(
 		 */
 
 		if (ns_vmid_num == 1) {
-			if (!gh_rm_get_this_vmid(&temp_vmid) &&
+			if (IS_REACHABLE(CONFIG_GH_RM_DRV) &&
+				!gh_rm_get_this_vmid(&temp_vmid) &&
 				(temp_vmid == ns_vmid_list[0])) {
 
 				ns_vmid_num = 0;
