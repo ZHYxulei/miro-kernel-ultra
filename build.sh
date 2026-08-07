@@ -124,29 +124,83 @@ init_submodules() {
     fi
 }
 
+clean_source_tree() {
+    # Remove stale build artifacts from source root that trigger
+    # "The source tree is not clean" when using O= out-of-tree builds.
+    # These files are leftovers from in-tree builds.
+    local dirty=0
+    for f in .config .config.old; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            dirty=1
+        fi
+    done
+    if [ "$dirty" = "1" ]; then
+        log "Removed stale config files from source root."
+    fi
+}
+
+# Check if out/.config is up-to-date with all defconfig fragments.
+# Returns 0 (true) if config needs regeneration, 1 (false) if up-to-date.
+config_needs_regen() {
+    local config_file="${OUT_DIR}/.config"
+
+    # No config file → must regenerate
+    [ -f "$config_file" ] || return 0
+
+    # Check if any defconfig fragment is newer than the config
+    local fragment
+    for fragment in "${DEFCONFIG_FRAGMENTS[@]}"; do
+        if [ -f "$fragment" ] && [ "$fragment" -nt "$config_file" ]; then
+            return 0
+        fi
+    done
+
+    # Check if key post-defconfig options are present
+    # (detects case where config was generated without enable_miro_config)
+    local key_configs=(
+        CONFIG_PINCTRL_MSM
+        CONFIG_KSU
+        CONFIG_KSU_SUSFS
+    )
+    local kc
+    for kc in "${key_configs[@]}"; do
+        if ! grep -q "^${kc}=" "$config_file"; then
+            return 0
+        fi
+    done
+
+    # Config is up-to-date
+    return 1
+}
+
 make_defconfig() {
-    log "Generating defconfig (merging fragments)..."
+    if config_needs_regen; then
+        log "Generating defconfig (merging fragments)..."
 
-    mkdir -p "${OUT_DIR}"
+        mkdir -p "${OUT_DIR}"
 
-    # Use kernel's merge_config.sh to merge all fragments into a single .config
-    # -m: only merge fragments, don't run make
-    # -O: output directory for .config
-    # -y: builtin (=y) takes precedence over module (=m) when both appear
-    ./scripts/kconfig/merge_config.sh -m -O "${OUT_DIR}" -y "${DEFCONFIG_FRAGMENTS[@]}"
+        # Use kernel's merge_config.sh to merge all fragments into a single .config
+        # -m: only merge fragments, don't run make
+        # -O: output directory for .config
+        # -y: builtin (=y) takes precedence over module (=m) when both appear
+        ./scripts/kconfig/merge_config.sh -m -O "${OUT_DIR}" -y "${DEFCONFIG_FRAGMENTS[@]}"
 
-    # Apply post-defconfig changes (from build.config.msm.miro)
-    log "  Applying post-defconfig changes..."
-    ./scripts/config --file "${OUT_DIR}/.config" \
-        --enable CONFIG_PINCTRL_MSM \
-        --enable CONFIG_PINCTRL_SUN \
-        --enable CONFIG_PINCTRL_QCOM_SPMI_PMIC
+        # Apply post-defconfig changes (from build.config.msm.miro)
+        log "  Applying post-defconfig changes..."
+        ./scripts/config --file "${OUT_DIR}/.config" \
+            --enable CONFIG_PINCTRL_MSM \
+            --enable CONFIG_PINCTRL_SUN \
+            --enable CONFIG_PINCTRL_QCOM_SPMI_PMIC
 
-    # Resolve config: olddefconfig silently answers 'n' (default) to all NEW
-    # options, preventing the interactive "Restart config..." platform prompts.
-    make "${MAKE_ARGS[@]}" olddefconfig
+        # Resolve config: olddefconfig silently answers 'n' (default) to all NEW
+        # options, preventing the interactive "Restart config..." platform prompts.
+        make "${MAKE_ARGS[@]}" olddefconfig
 
-    log "Defconfig generated at ${OUT_DIR}/.config"
+        log "Defconfig generated at ${OUT_DIR}/.config"
+    else
+        log "Config is up-to-date, skipping defconfig generation."
+    fi
 }
 
 build_kernel() {
@@ -322,11 +376,13 @@ main() {
         defconfig)
             check_prerequisites
             init_submodules
+            clean_source_tree
             make_defconfig
             ;;
         kernel)
             check_prerequisites
             init_submodules
+            clean_source_tree
             make_defconfig
             build_kernel
             log "Total time: $(elapsed)"
@@ -334,6 +390,7 @@ main() {
         all)
             check_prerequisites
             init_submodules
+            clean_source_tree
             make_defconfig
             build_kernel
             install_modules
@@ -343,6 +400,7 @@ main() {
         zip)
             check_prerequisites
             init_submodules
+            clean_source_tree
             make_defconfig
             build_kernel
             install_modules
