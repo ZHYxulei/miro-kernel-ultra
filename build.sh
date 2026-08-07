@@ -16,6 +16,7 @@
 #   bash build.sh defconfig     Only generate .config
 #   bash build.sh kernel        Build kernel (Image + modules + dtbs)
 #   bash build.sh all           Build kernel and copy outputs to out/dist
+#   bash build.sh zip           Build kernel and package AnyKernel3 flashable zip
 #   bash build.sh clean         Clean build directory
 #   bash build.sh mrproper      Deep clean (also removes .config)
 #
@@ -68,6 +69,14 @@ DEFCONFIG_FRAGMENTS=(
 KERNEL_IMAGE=${OUT_DIR}/arch/${ARCH}/boot/Image
 KERNEL_DTB=${OUT_DIR}/arch/${ARCH}/boot/dtb
 KERNEL_DTBO=${OUT_DIR}/arch/${ARCH}/boot/dtbo.img
+
+# AnyKernel3 packaging
+ANYKERNEL3_DIR="AnyKernel3"
+ANYKERNEL3_REPO="https://github.com/osm0sis/AnyKernel3.git"
+ANYKERNEL3_ZIP="miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip"
+
+# Kernel name shown in AnyKernel3 installer
+KERNEL_NAME="miro-kernel-ultra"
 
 START_SEC=$(date +%s)
 
@@ -190,6 +199,72 @@ install_modules() {
     rm -f "${OUT_DIR}/modules_install/lib/modules/"*/source
 }
 
+setup_anykernel3() {
+    if [ -d "${ANYKERNEL3_DIR}" ]; then
+        log "AnyKernel3 directory found, using existing."
+    else
+        log "Cloning AnyKernel3..."
+        git clone --depth=1 "${ANYKERNEL3_REPO}" "${ANYKERNEL3_DIR}"
+    fi
+}
+
+package_anykernel3() {
+    log "Packaging AnyKernel3 flashable zip..."
+
+    setup_anykernel3
+
+    # Clean previous artifacts in AnyKernel3
+    rm -f "${ANYKERNEL3_DIR}/Image" "${ANYKERNEL3_DIR}/dtb" "${ANYKERNEL3_DIR}/dtbo.img"
+    rm -rf "${ANYKERNEL3_DIR}/modules"
+
+    # Copy kernel outputs
+    if [ -f "${KERNEL_IMAGE}" ]; then
+        cp "${KERNEL_IMAGE}" "${ANYKERNEL3_DIR}/"
+    else
+        error "Kernel Image not found at ${KERNEL_IMAGE}"
+        exit 1
+    fi
+
+    # Copy DTB blob
+    local dts_dir="${OUT_DIR}/arch/${ARCH}/boot/dts/vendor/qcom"
+    if [ -d "${dts_dir}" ]; then
+        find "${dts_dir}" -name '*.dtb' -exec cat {} + > "${ANYKERNEL3_DIR}/dtb"
+        log "  Copied dtb"
+    fi
+
+    # Copy DTBO image
+    if [ -f "${KERNEL_DTBO}" ]; then
+        cp "${KERNEL_DTBO}" "${ANYKERNEL3_DIR}/"
+        log "  Copied dtbo.img"
+    fi
+
+    # Copy kernel modules
+    if [ -d "${OUT_DIR}/modules_install" ]; then
+        mkdir -p "${ANYKERNEL3_DIR}/modules"
+        cp -r "${OUT_DIR}/modules_install/lib/modules/"* "${ANYKERNEL3_DIR}/modules/"
+        log "  Copied modules"
+    fi
+
+    # Configure anykernel3.sh for this device
+    local ak3_sh="${ANYKERNEL3_DIR}/anykernel3.sh"
+    if [ -f "${ak3_sh}" ]; then
+        sed -i \
+            -e "s/^kernel.string=.*/kernel.string=${KERNEL_NAME}/" \
+            -e "s/^block=.*/block=auto/" \
+            -e "s/^kernel_type=.*/kernel_type=Image/" \
+            -e "s/^dtbo_enable=.*/dtbo_enable=true/" \
+            -e "s/^module=.*/module=none/" \
+            "${ak3_sh}"
+        log "  Configured anykernel3.sh"
+    fi
+
+    # Create flashable zip
+    local zip_path="${DIST_DIR}/${ANYKERNEL3_ZIP}"
+    mkdir -p "${DIST_DIR}"
+    ( cd "${ANYKERNEL3_DIR}" && zip -r9 "${SCRIPT_DIR}/${zip_path}" . -x ".git/*" "README.md" )
+    log "AnyKernel3 zip created: ${zip_path}"
+}
+
 clean() {
     log "Cleaning build directory..."
     make "${MAKE_ARGS[@]}" clean
@@ -215,6 +290,8 @@ Commands:
   defconfig   Generate .config (merge gki_defconfig + vendor fragments)
   kernel      Build kernel (defconfig + Image + modules + dtbs)
   all         Build kernel, install modules, and copy outputs to out/dist
+  zip         Build kernel and package AnyKernel3 flashable zip
+  package     Package AnyKernel3 zip from existing out/dist outputs
   modules     Install kernel modules (run after 'kernel')
   clean       Clean build artifacts (preserves .config)
   mrproper    Deep clean (removes everything including .config)
@@ -223,9 +300,11 @@ Environment:
   LLVM=1      Use LLVM toolchain (clang + ld.lld) [default: 1]
 
 Examples:
-  bash build.sh all              # Full build
+  bash build.sh zip              # Full build + AnyKernel3 flashable zip
+  bash build.sh all              # Full build without packaging
   bash build.sh kernel           # Just build kernel
   bash build.sh defconfig        # Just generate config
+  bash build.sh package          # Re-package zip from existing build
 EOF
 }
 
@@ -260,6 +339,19 @@ main() {
             install_modules
             copy_outputs
             log "Total time: $(elapsed)"
+            ;;
+        zip)
+            check_prerequisites
+            init_submodules
+            make_defconfig
+            build_kernel
+            install_modules
+            copy_outputs
+            package_anykernel3
+            log "Total time: $(elapsed)"
+            ;;
+        package)
+            package_anykernel3
             ;;
         modules)
             install_modules

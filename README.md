@@ -18,6 +18,7 @@
 | 功能 | 状态 |
 | --- | --- |
 | `miro` ARM64 内核构建 | 已支持 |
+| 独立编译脚本 `build.sh` | 已支持（LLVM 工具链 + AnyKernel3 打包） |
 | GKI `perf` / `consolidate` 构建变体 | 已支持 |
 | DroidSpaces 配置片段 | 已接入构建配置 |
 | SUSFS | 已接入 |
@@ -46,18 +47,21 @@ ReSukiSU/KernelSU 已作为 git 子模块接入，源码位于 `KernelSU/`（上
 - 架构：ARM64
 - Linux 基础版本：`6.6.30`
 - Android 内核分支：`android15-6.6`
-- 构建系统：Kleaf/Bazel，兼容 Android Kernel `build.config` 流程
+- 构建系统：`build.sh` 独立编译（LLVM 工具链），兼容 Kleaf/Bazel 和 `build.config` 流程
 
 ## 构建
 
-本仓库依赖完整的 Android Kernel/Kleaf 工作空间，通常作为 `msm-kernel` 目录
-使用，并需要同级的 `build`、`common`、`prebuilts` 等组件。它不是一个可以
-脱离 Android 构建环境直接生成设备镜像的独立 Linux 内核树。
+本仓库支持两种构建方式：
+
+1. **独立编译**（推荐）：使用项目自带的 `build.sh` 脚本，仅需系统安装的
+   LLVM 工具链，无需完整 Android 源码树。
+2. **Kleaf/Bazel 构建**：在完整的 Android Kernel 工作空间中使用，适合需要
+   GKI/KMI 合规性检查的场景。
 
 ### 1. 克隆仓库
 
 ```bash
-git clone --recursive https://github.com/ZHYxulei/miro-kernel-ultra.git msm-kernel
+git clone --recursive https://github.com/ZHYxulei/miro-kernel-ultra.git
 ```
 
 `--recursive` 会在克隆时自动初始化并拉取 `KernelSU` 子模块。
@@ -65,7 +69,7 @@ git clone --recursive https://github.com/ZHYxulei/miro-kernel-ultra.git msm-kern
 如果已经克隆但未带 `--recursive`，需要手动初始化子模块：
 
 ```bash
-cd msm-kernel
+cd miro-kernel-ultra
 git submodule update --init --recursive
 ```
 
@@ -84,7 +88,75 @@ ls -l drivers/kernelsu
 # 预期输出：drivers/kernelsu -> ../KernelSU/kernel
 ```
 
-### 2. Kleaf/Bazel 构建
+### 2. 独立编译（build.sh）
+
+#### 依赖安装
+
+```bash
+apt install clang lld llvm flex bison bc cpio device-tree-compiler \
+    libelf-dev libssl-dev libncurses-dev zip
+```
+
+#### 命令一览
+
+```bash
+bash build.sh help          # 查看帮助
+bash build.sh defconfig     # 仅生成 .config
+bash build.sh kernel        # 编译内核（Image + modules + dtbs）
+bash build.sh all           # 编译 + 安装模块 + 输出到 out/dist
+bash build.sh zip           # 编译 + 打包 AnyKernel3 刷机包
+bash build.sh package       # 从已有 out/dist 重新打包 AnyKernel3
+bash build.sh clean         # 清理构建产物（保留 .config）
+bash build.sh mrproper      # 深度清理（包括 .config）
+```
+
+#### 完整编译并打包刷机包
+
+```bash
+bash build.sh zip
+```
+
+该命令会依次执行：
+1. 检查编译依赖
+2. 初始化 KernelSU 子模块
+3. 合并 defconfig 片段（`gki_defconfig` + `sun_perf` + `miro_perf` + `droidspaces`）
+4. 应用后置配置（启用 `PINCTRL_MSM` 等）
+5. 编译内核（Image + modules + dtbs）
+6. 安装内核模块
+7. 复制构建产物到 `out/dist/`
+8. 克隆/复用 AnyKernel3 模板，注入内核产物并生成刷机 zip
+
+生成的刷机包位于：
+
+```text
+out/dist/miro-kernel-ultra-YYYYMMDD-HHMM.zip
+```
+
+#### 构建产物
+
+| 文件 | 说明 |
+| --- | --- |
+| `out/dist/Image` | 内核镜像 |
+| `out/dist/dtb` | 设备树 blob |
+| `out/dist/dtbo.img` | DTBO 镜像 |
+| `out/dist/modules/` | 内核模块 |
+| `out/dist/vmlinux` | 未压缩内核（调试用） |
+| `out/dist/System.map` | 符号表 |
+| `out/dist/.config` | 最终内核配置 |
+
+#### 配置说明
+
+`build.sh` 使用 LLVM 工具链（`clang` + `ld.lld`）进行交叉编译，合并以下
+defconfig 片段：
+
+1. `arch/arm64/configs/gki_defconfig` — GKI 基础配置
+2. `arch/arm64/configs/vendor/sun_perf.config` — Qualcomm Sun 平台配置
+3. `arch/arm64/configs/vendor/miro_perf.config` — 小米 miro 设备配置
+4. `arch/arm64/configs/droidspaces.fragment` — DroidSpaces 配置
+
+合并后通过 `olddefconfig` 自动解析新增的 Kconfig 选项，避免交互式提示。
+
+### 3. Kleaf/Bazel 构建
 
 在 Android Kernel 工作区根目录执行：
 
@@ -100,7 +172,7 @@ out/msm-kernel-miro-perf/dist/
 out/msm-kernel-miro-consolidate/dist/
 ```
 
-### 3. 传统 build.config 流程
+### 4. 传统 build.config 流程
 
 传统配置入口为：
 
