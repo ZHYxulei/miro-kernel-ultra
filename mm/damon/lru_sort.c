@@ -145,7 +145,7 @@ static struct damos_access_pattern damon_lru_sort_stub_pattern = {
 static struct damon_ctx *ctx;
 static struct damon_target *target;
 
-static struct damos *damon_lru_sort_new_scheme(
+static noinline struct damos *damon_lru_sort_new_scheme(
 		struct damos_access_pattern *pattern, enum damos_action action)
 {
 	struct damos_quota quota = damon_lru_sort_quota;
