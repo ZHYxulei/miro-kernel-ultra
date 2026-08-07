@@ -1,3 +1,13 @@
 ################################################################################
 ## Inheriting configs from ACK
-. ${ROOT_DIR}/msm-kernel/build.config.msm.sun
+. ${ROOT_DIR}/${KERNEL_DIR}/build.config.msm.sun
+POST_DEFCONFIG_CMDS+=" enable_miro_config"
+
+function enable_miro_config() {
+    ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
+        --enable CONFIG_PINCTRL_MSM \
+        --enable CONFIG_PINCTRL_SUN \
+        --enable CONFIG_PINCTRL_QCOM_SPMI_PMIC
+
+    make O=${OUT_DIR} olddefconfig
+}
