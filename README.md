@@ -211,3 +211,14 @@ SUSFS 补丁源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
 
 本项目面向研究、开发和设备适配用途。刷写或使用自定义内核可能导致设备
 无法启动、数据丢失、功能异常或安全边界变化。请在充分备份并了解风险后使用。
+
+## 开源许可证
+
+本项目基于 Linux 内核，遵循 [`GPL-2.0 WITH Linux-syscall-note`](COPYING)
+开源许可证。项目中集成的第三方组件各自保持其原始许可证：
+
+- **Linux 内核**：GPL-2.0 WITH Linux-syscall-note
+- **ReSukiSU/KernelSU**：GPL-2.0（子模块 `KernelSU/`）
+- **SUSFS (susfs4ksu)**：GPL-2.0（内核补丁部分）
+
+使用、修改和分发本项目代码须遵守上述许可证条款。
