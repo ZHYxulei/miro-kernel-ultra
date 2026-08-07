@@ -32,10 +32,10 @@ struct mca_sysfs_attr_info {
  * Macro to declare a read-only sysfs attribute entry.
  * The 'prop' argument is an enum value identifying the property.
  */
-#define mca_sysfs_attr_ro(group, mode, prop, field) \
+#define mca_sysfs_attr_ro(group, perm, prop, field) \
 { \
     .sysfs_attr_name = prop, \
-    .mode = mode, \
+    .mode = perm, \
     .attr_name = #field, \
 }
 
