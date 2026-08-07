@@ -1429,7 +1429,7 @@ static int rfcomm_apply_pn(struct rfcomm_dlc *d, int cr, struct rfcomm_pn *pn)
 	return 0;
 }
 
-static int rfcomm_recv_pn(struct rfcomm_session *s, int cr, struct sk_buff *skb)
+static noinline int rfcomm_recv_pn(struct rfcomm_session *s, int cr, struct sk_buff *skb)
 {
 	struct rfcomm_pn *pn = (void *) skb->data;
 	struct rfcomm_dlc *d;
@@ -1481,7 +1481,7 @@ static int rfcomm_recv_pn(struct rfcomm_session *s, int cr, struct sk_buff *skb)
 	return 0;
 }
 
-static int rfcomm_recv_rpn(struct rfcomm_session *s, int cr, int len, struct sk_buff *skb)
+static noinline int rfcomm_recv_rpn(struct rfcomm_session *s, int cr, int len, struct sk_buff *skb)
 {
 	struct rfcomm_rpn *rpn = (void *) skb->data;
 	u8 dlci = __get_dlci(rpn->dlci);
@@ -1735,7 +1735,7 @@ drop:
 	return 0;
 }
 
-static struct rfcomm_session *rfcomm_recv_frame(struct rfcomm_session *s,
+static noinline struct rfcomm_session *rfcomm_recv_frame(struct rfcomm_session *s,
 						struct sk_buff *skb)
 {
 	struct rfcomm_hdr *hdr = (void *) skb->data;
@@ -2012,7 +2012,7 @@ static struct rfcomm_session *rfcomm_check_connection(struct rfcomm_session *s)
 	return s;
 }
 
-static void rfcomm_process_sessions(void)
+static noinline void rfcomm_process_sessions(void)
 {
 	struct rfcomm_session *s, *n;
 
