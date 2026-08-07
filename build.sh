@@ -17,8 +17,17 @@
 #   bash build.sh kernel        Build kernel (Image + modules + dtbs)
 #   bash build.sh all           Build kernel and copy outputs to out/dist
 #   bash build.sh zip           Build kernel and package AnyKernel3 flashable zip
-#   bash build.sh clean         Clean build directory
-#   bash build.sh mrproper      Deep clean (also removes .config)
+#   bash build.sh clean         Clean build directory (preserves .config)
+#   bash build.sh deepclean     Deep clean: out/ + AnyKernel3/ + submodule artifacts
+#   bash build.sh mrproper      Full source tree clean (make mrproper + deepclean)
+#   bash build.sh toolchain     Show current toolchain configuration
+#
+# Environment variables:
+#   CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
+#   GCC_PATH          Path to directory containing aarch64-linux-gnu-gcc (for CROSS_COMPILE)
+#   JOBS              Override number of parallel jobs (default: nproc)
+#   KERNEL_NAME       Override kernel name shown in AnyKernel3
+#   OUT_DIR           Override output directory (default: out)
 #
 
 set -e
@@ -32,20 +41,57 @@ cd "$SCRIPT_DIR"
 
 ARCH=arm64
 DEFCONFIG=gki_defconfig
-OUT_DIR="out"
-DIST_DIR="out/dist"
-JOBS=$(nproc --all)
+OUT_DIR="${OUT_DIR:-out}"
+DIST_DIR="${OUT_DIR}/dist"
+JOBS="${JOBS:-$(nproc --all)}"
 
-# Toolchain: use system-installed LLVM
-export LLVM=1
-export ARCH=${ARCH}
+# ============================================================
+# Toolchain configuration
+# ============================================================
+# Supports custom toolchain via environment variables:
+#   CLANG_PATH  - directory containing clang/ld.lld/llvm-strip
+#   GCC_PATH    - directory containing aarch64-linux-gnu-gcc
+# If not set, falls back to system-installed toolchain.
 
-# Clang cross-compilation triple
-CLANG_TRIPLE=aarch64-linux-gnu-
-CROSS_COMPILE=aarch64-linux-gnu-
-CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+setup_toolchain() {
+    export LLVM=1
+    export ARCH=${ARCH}
 
-# Common make arguments
+    # Clang cross-compilation triple
+    CLANG_TRIPLE=aarch64-linux-gnu-
+    CROSS_COMPILE=aarch64-linux-gnu-
+    CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+
+    # Custom clang path
+    if [ -n "${CLANG_PATH}" ]; then
+        if [ -d "${CLANG_PATH}" ]; then
+            export PATH="${CLANG_PATH}:${PATH}"
+            local clang_bin="${CLANG_PATH}/clang"
+            if [ -x "${clang_bin}" ]; then
+                log "Using custom clang: ${clang_bin}"
+            else
+                error "CLANG_PATH is set but clang not found in ${CLANG_PATH}"
+                exit 1
+            fi
+        else
+            error "CLANG_PATH directory does not exist: ${CLANG_PATH}"
+            exit 1
+        fi
+    fi
+
+    # Custom GCC path (for CROSS_COMPILE, needed for some assembly/link steps)
+    if [ -n "${GCC_PATH}" ]; then
+        if [ -d "${GCC_PATH}" ]; then
+            export PATH="${GCC_PATH}:${PATH}"
+            log "Using custom GCC: ${GCC_PATH}/aarch64-linux-gnu-gcc"
+        else
+            error "GCC_PATH directory does not exist: ${GCC_PATH}"
+            exit 1
+        fi
+    fi
+}
+
+# Common make arguments (assembled after setup_toolchain)
 MAKE_ARGS=(
     ARCH=${ARCH}
     LLVM=1
@@ -103,6 +149,7 @@ elapsed() {
 
 check_prerequisites() {
     log "Checking prerequisites..."
+    setup_toolchain
     local missing=()
     for tool in clang ld.lld llvm-strip flex bison bc cpio dtc; do
         command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
@@ -110,9 +157,40 @@ check_prerequisites() {
     if [ ${#missing[@]} -gt 0 ]; then
         error "Missing tools: ${missing[*]}"
         error "Install with: apt install clang lld llvm flex bison bc cpio device-tree-compiler libelf-dev libssl-dev libncurses-dev"
+        error "Or set CLANG_PATH / GCC_PATH to use a custom toolchain."
         exit 1
     fi
     log "Clang version: $(clang --version | head -1)"
+}
+
+show_toolchain() {
+    setup_toolchain
+    log "Toolchain configuration:"
+    echo "  ARCH:                 ${ARCH}"
+    echo "  LLVM:                 ${LLVM}"
+    echo "  CLANG_TRIPLE:         ${CLANG_TRIPLE}"
+    echo "  CROSS_COMPILE:        ${CROSS_COMPILE}"
+    echo "  CROSS_COMPILE_COMPAT: ${CROSS_COMPILE_COMPAT}"
+    echo "  OUT_DIR:              ${OUT_DIR}"
+    echo "  JOBS:                 ${JOBS}"
+    echo ""
+    if [ -n "${CLANG_PATH}" ]; then
+        echo "  CLANG_PATH (custom):  ${CLANG_PATH}"
+    else
+        echo "  CLANG_PATH:           (system default)"
+    fi
+    if [ -n "${GCC_PATH}" ]; then
+        echo "  GCC_PATH (custom):    ${GCC_PATH}"
+    else
+        echo "  GCC_PATH:             (system default)"
+    fi
+    echo ""
+    echo "  clang:        $(command -v clang)"
+    echo "  ld.lld:       $(command -v ld.lld)"
+    echo "  llvm-strip:   $(command -v llvm-strip)"
+    if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+        echo "  cross gcc:    $(command -v aarch64-linux-gnu-gcc)"
+    fi
 }
 
 init_submodules() {
@@ -320,17 +398,68 @@ package_anykernel3() {
 }
 
 clean() {
-    log "Cleaning build directory..."
-    make "${MAKE_ARGS[@]}" clean
+    log "Cleaning build directory (preserving .config)..."
+    if [ -f "${OUT_DIR}/.config" ]; then
+        cp "${OUT_DIR}/.config" "${OUT_DIR}/.config.backup"
+        make "${MAKE_ARGS[@]}" clean 2>/dev/null || true
+        rm -rf "${OUT_DIR}"
+        mkdir -p "${OUT_DIR}"
+        mv "${OUT_DIR}/.config.backup" "${OUT_DIR}/.config" 2>/dev/null || true
+        log "Build directory cleaned, .config preserved."
+    else
+        rm -rf "${OUT_DIR}"
+        log "Build directory cleaned (no .config to preserve)."
+    fi
+}
+
+deepclean() {
+    log "Deep cleaning..."
+    # Remove build output
     rm -rf "${OUT_DIR}"
-    log "Done."
+    log "  Removed ${OUT_DIR}/"
+
+    # Remove AnyKernel3 clone
+    if [ -d "${ANYKERNEL3_DIR}" ]; then
+        rm -rf "${ANYKERNEL3_DIR}"
+        log "  Removed ${ANYKERNEL3_DIR}/"
+    fi
+
+    # Remove stale config files from source root
+    rm -f .config .config.old .tmp_defconfig
+    log "  Removed stale root config files"
+
+    # Clean KernelSU submodule build artifacts
+    if [ -d "KernelSU/kernel" ]; then
+        rm -f KernelSU/kernel/built-in.a KernelSU/kernel/modules.order
+        find KernelSU/kernel -name '*.o' -delete 2>/dev/null || true
+        find KernelSU/kernel -name '*.cmd' -delete 2>/dev/null || true
+        log "  Cleaned KernelSU submodule artifacts"
+    fi
+
+    # Remove stray build artifacts in source tree (not tracked by make clean)
+    find . -maxdepth 1 -name '*.o' -delete 2>/dev/null || true
+    find . -maxdepth 1 -name '*.a' -delete 2>/dev/null || true
+    find . -maxdepth 1 -name '*.cmd' -delete 2>/dev/null || true
+
+    log "Deep clean complete."
 }
 
 mrproper() {
-    log "Running mrproper..."
-    make "${MAKE_ARGS[@]}" mrproper
+    log "Running mrproper (full source tree clean)..."
+    make "${MAKE_ARGS[@]}" mrproper 2>/dev/null || log "  make mrproper had warnings (ignored)"
     rm -rf "${OUT_DIR}"
-    log "Done."
+
+    # Also deepclean AnyKernel3 and submodule artifacts
+    if [ -d "${ANYKERNEL3_DIR}" ]; then
+        rm -rf "${ANYKERNEL3_DIR}"
+        log "  Removed ${ANYKERNEL3_DIR}/"
+    fi
+    if [ -d "KernelSU/kernel" ]; then
+        rm -f KernelSU/kernel/built-in.a
+        log "  Cleaned KernelSU submodule artifacts"
+    fi
+
+    log "mrproper complete."
 }
 
 show_help() {
@@ -347,18 +476,30 @@ Commands:
   zip         Build kernel and package AnyKernel3 flashable zip
   package     Package AnyKernel3 zip from existing out/dist outputs
   modules     Install kernel modules (run after 'kernel')
-  clean       Clean build artifacts (preserves .config)
-  mrproper    Deep clean (removes everything including .config)
+  toolchain   Show current toolchain configuration
+  clean       Clean build directory (preserves .config)
+  deepclean   Deep clean: out/ + AnyKernel3/ + KernelSU artifacts + stale files
+  mrproper    Full source tree clean (make mrproper + deepclean)
 
-Environment:
-  LLVM=1      Use LLVM toolchain (clang + ld.lld) [default: 1]
+Environment variables:
+  CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
+  GCC_PATH          Path to directory containing aarch64-linux-gnu-gcc
+  JOBS              Override number of parallel jobs (default: nproc)
+  KERNEL_NAME       Override kernel name shown in AnyKernel3 installer
+  OUT_DIR           Override output directory (default: out)
 
 Examples:
-  bash build.sh zip              # Full build + AnyKernel3 flashable zip
-  bash build.sh all              # Full build without packaging
-  bash build.sh kernel           # Just build kernel
-  bash build.sh defconfig        # Just generate config
-  bash build.sh package          # Re-package zip from existing build
+  bash build.sh zip                                    # Full build + flashable zip
+  bash build.sh all                                    # Full build without packaging
+  bash build.sh kernel                                 # Just build kernel
+  bash build.sh defconfig                              # Just generate config
+  bash build.sh package                                # Re-package zip from existing build
+  bash build.sh toolchain                              # Show toolchain info
+  bash build.sh clean                                  # Clean out/ (keep .config)
+  bash build.sh deepclean                              # Remove all build artifacts
+  bash build.sh mrproper                               # Full source tree clean
+  CLANG_PATH=/opt/clang/bin bash build.sh zip          # Build with custom clang
+  CLANG_PATH=/opt/clang/bin GCC_PATH=/opt/gcc/bin bash build.sh all
 EOF
 }
 
@@ -414,8 +555,14 @@ main() {
         modules)
             install_modules
             ;;
+        toolchain)
+            show_toolchain
+            ;;
         clean)
             clean
+            ;;
+        deepclean)
+            deepclean
             ;;
         mrproper)
             mrproper
