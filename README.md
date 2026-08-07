@@ -21,7 +21,7 @@
 | GKI `perf` / `consolidate` 构建变体 | 已支持 |
 | DroidSpaces 配置片段 | 已接入构建配置 |
 | SUSFS | 计划中 |
-| ReSukiSU/KernelSU | 计划中 |
+| ReSukiSU/KernelSU | 已接入（子模块） |
 | 稳定性、性能和功耗优化 | 持续进行 |
 
 当前 DroidSpaces 配置位于
@@ -29,9 +29,13 @@
 并通过 [`build.config.msm.perf`](build.config.msm.perf) 使用项目现有的
 `apply_defconfig_fragment` 流程合并到 `perf` 和 `consolidate` 变体。
 
-SUSFS 与 ReSukiSU/KernelSU 尚未在当前版本中实现。相关功能需要分别评估
-内核补丁、Kconfig、符号导出、ABI/KMI 影响以及设备启动兼容性，完成验证后
-再更新本 README 的状态。
+SUSFS 尚未在当前版本中实现。相关功能需要评估内核补丁、Kconfig、符号导出、
+ABI/KMI 影响以及设备启动兼容性，完成验证后再更新本 README 的状态。
+
+ReSukiSU/KernelSU 已作为 git 子模块接入，源码位于 `KernelSU/`（上游
+`ReSukiSU/ReSukiSU`），内核驱动通过符号链接 `drivers/kernelsu -> ../KernelSU/kernel`
+接入驱动树，并在 `gki_defconfig` 中启用了 `CONFIG_KSU`、`CONFIG_KSU_SUSFS`
+和 `CONFIG_KSU_MANUAL_HOOK`。
 
 ## 基本信息
 
@@ -44,11 +48,43 @@ SUSFS 与 ReSukiSU/KernelSU 尚未在当前版本中实现。相关功能需要�
 
 ## 构建
 
-本仓库依赖完整的 Android Kernel/Kleaf 工作区，通常作为 `msm-kernel` 目录
+本仓库依赖完整的 Android Kernel/Kleaf 工作空间，通常作为 `msm-kernel` 目录
 使用，并需要同级的 `build`、`common`、`prebuilts` 等组件。它不是一个可以
 脱离 Android 构建环境直接生成设备镜像的独立 Linux 内核树。
 
-常用 Kleaf 构建目标：
+### 1. 克隆仓库
+
+```bash
+git clone --recursive https://github.com/ZHYxulei/miro-kernel-ultra.git msm-kernel
+```
+
+`--recursive` 会在克隆时自动初始化并拉取 `KernelSU` 子模块。
+
+如果已经克隆但未带 `--recursive`，需要手动初始化子模块：
+
+```bash
+cd msm-kernel
+git submodule update --init --recursive
+```
+
+验证子模块状态：
+
+```bash
+git submodule status
+# 预期输出：
+#  058cdc931016cb2cb769ed063cce6d65d6df61e0 KernelSU (v4.1.0-1338-g058cdc93)
+```
+
+确认驱动符号链接已就绪：
+
+```bash
+ls -l drivers/kernelsu
+# 预期输出：drivers/kernelsu -> ../KernelSU/kernel
+```
+
+### 2. Kleaf/Bazel 构建
+
+在 Android Kernel 工作区根目录执行：
 
 ```bash
 tools/bazel run //msm-kernel:miro_perf_dist
@@ -61,6 +97,8 @@ tools/bazel run //msm-kernel:miro_consolidate_dist
 out/msm-kernel-miro-perf/dist/
 out/msm-kernel-miro-consolidate/dist/
 ```
+
+### 3. 传统 build.config 流程
 
 传统配置入口为：
 
@@ -87,15 +125,31 @@ DroidSpaces 配置片段当前启用以下能力：
 配置。若某个构建变体没有经过 `build.config.msm.perf`，则不会自动加载该
 片段。
 
+## ReSukiSU/KernelSU
+
+ReSukiSU/KernelSU 通过 git 子模块方式接入：
+
+- **子模块**：`KernelSU/`，上游为 [`ReSukiSU/ReSukiSU`](https://github.com/ReSukiSU/ReSukiSU)
+- **驱动链接**：`drivers/kernelsu -> ../KernelSU/kernel`（符号链接）
+- **Kconfig 入口**：[`drivers/Kconfig`](drivers/Kconfig) 中 `source "drivers/kernelsu/Kconfig"`
+- **构建入口**：[`drivers/Makefile`](drivers/Makefile) 中 `obj-$(CONFIG_KSU) += kernelsu/`
+- **内核配置**（在 [`gki_defconfig`](arch/arm64/configs/gki_defconfig) 中启用）：
+  - `CONFIG_KPROBE_EVENTS` — kprobe 事件支持
+  - `CONFIG_KSU` — KernelSU 核心
+  - `CONFIG_KSU_SUSFS` — SUSFS 集成接口
+  - `CONFIG_KSU_MANUAL_HOOK` — 手动 hook 点
+
+克隆仓库后必须执行 `git submodule update --init --recursive` 以拉取子模块，
+否则 `drivers/kernelsu` 符号链接将无法解析，构建会失败。
+
 ## 开发计划
 
 后续工作将按以下方向推进：
 
 1. 评估并集成 SUSFS，确认其与 Android 6.6、GKI/KMI 以及现有文件系统配置的兼容性。
-2. 评估并集成 ReSukiSU/KernelSU，处理 Kconfig、内核接口、符号导出和模块加载要求。
-3. 为新增功能补充独立配置片段和构建入口，避免影响默认 GKI 配置。
-4. 完善启动、模块、网络、容器和文件系统场景的验证。
-5. 持续优化性能、功耗、稳定性和构建可复现性。
+2. 为新增功能补充独立配置片段和构建入口，避免影响默认 GKI 配置。
+3. 完善启动、模块、网络、容器和文件系统场景的验证。
+4. 持续优化性能、功耗、稳定性和构建可复现性。
 
 ## 兼容性说明
 
