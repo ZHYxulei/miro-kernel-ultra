@@ -975,6 +975,6 @@ config  CHARGER_PARTITION
 	help
 	  Say Y or M here to enable charger partition
 
-source "drivers/power/supply/mca/Kconfig"
+# source "drivers/power/supply/mca/Kconfig"
 
 endif # POWER_SUPPLY
