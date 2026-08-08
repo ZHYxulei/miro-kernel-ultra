@@ -498,6 +498,21 @@ setup_anykernel3() {
         error "AnyKernel3 not found. Run: git submodule update --init AnyKernel3"
         exit 1
     fi
+
+    # Ensure build artifacts are git-ignored within the AnyKernel3 directory
+    local ak3_gitignore="${ANYKERNEL3_DIR}/.gitignore"
+    if [ ! -f "$ak3_gitignore" ]; then
+        cat > "$ak3_gitignore" << 'AK3GITIGNORE'
+# Build artifacts injected by build.sh
+Image
+Image.gz
+Image.gz-dtb
+dtb
+dtbo.img
+modules/
+AK3GITIGNORE
+        log "  Created .gitignore in AnyKernel3 for build artifacts"
+    fi
 }
 
 package_anykernel3() {
@@ -537,23 +552,23 @@ package_anykernel3() {
         log "  Copied modules"
     fi
 
-    # Configure anykernel3.sh for this device
-    local ak3_sh="${ANYKERNEL3_DIR}/anykernel3.sh"
+    # Configure anykernel.sh for this device
+    local ak3_sh="${ANYKERNEL3_DIR}/anykernel.sh"
     if [ -f "${ak3_sh}" ]; then
         sed -i \
             -e "s/^kernel.string=.*/kernel.string=${KERNEL_NAME}/" \
-            -e "s/^block=.*/block=auto/" \
-            -e "s/^kernel_type=.*/kernel_type=Image/" \
-            -e "s/^dtbo_enable=.*/dtbo_enable=true/" \
-            -e "s/^module=.*/module=none/" \
+            -e "s/^do\.modules=.*/do.modules=1/" \
+            -e "s/^do\.devicecheck=.*/do.devicecheck=0/" \
+            -e "s/^BLOCK=.*/BLOCK=auto;/" \
+            -e "s/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1;/" \
             "${ak3_sh}"
-        log "  Configured anykernel3.sh"
+        log "  Configured anykernel.sh"
     fi
 
     # Create flashable zip
     local zip_path="${DIST_DIR}/${ANYKERNEL3_ZIP}"
     mkdir -p "${DIST_DIR}"
-    ( cd "${ANYKERNEL3_DIR}" && zip -r9 "${SCRIPT_DIR}/${zip_path}" . -x ".git/*" "README.md" )
+    ( cd "${ANYKERNEL3_DIR}" && zip -r9 "${SCRIPT_DIR}/${zip_path}" . -x ".git/*" "README.md" ".gitignore" )
     log "AnyKernel3 zip created: ${zip_path}"
 }
 
