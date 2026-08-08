@@ -163,15 +163,51 @@ out/dist/miro-kernel-ultra-YYYYMMDD-HHMM.zip
 
 #### 依赖安装
 
+**一键安装**（推荐）：使用脚本内置命令自动检测包管理器并安装所有依赖：
+
 ```bash
-apt install clang lld llvm flex bison bc cpio device-tree-compiler \
-    libelf-dev libssl-dev libncurses-dev zip
+./build.sh install-deps
 ```
+
+该命令支持 `apt`（Debian/Ubuntu）、`dnf`（Fedora/RHEL）、`pacman`（Arch Linux）和 `zypper`（openSUSE）。
+
+**手动安装**：也可以手动执行以下命令安装依赖：
+
+```bash
+# Debian/Ubuntu
+apt install clang lld llvm flex bison bc cpio device-tree-compiler \
+    libelf-dev libssl-dev libncurses-dev zip git ccache
+
+# Fedora/RHEL
+dnf install clang lld llvm flex bison bc cpio dtc \
+    elfutils-libelf-devel openssl-devel ncurses-devel zip git ccache
+
+# Arch Linux
+pacman -S clang lld llvm flex bison bc cpio dtc \
+    libelf openssl ncurses zip git ccache
+```
+
+完整依赖列表：
+
+| 依赖 | 说明 |
+| --- | --- |
+| `clang` `lld` `llvm` | LLVM 编译工具链（clang >= 15） |
+| `flex` `bison` | 词法/语法分析器生成工具 |
+| `bc` | 数学计算工具（内核 Makefile 使用） |
+| `cpio` | initramfs 打包工具 |
+| `dtc` (device-tree-compiler) | 设备树编译器 |
+| `libelf-dev` (libelf-devel) | ELF 文件处理库 |
+| `libssl-dev` (openssl-devel) | OpenSSL 开发库 |
+| `libncurses-dev` (ncurses-devel) | menuconfig 界面依赖 |
+| `zip` | AnyKernel3 刷机包打包 |
+| `git` | 子模块管理 |
+| `ccache`（可选） | 编译缓存，加速重复编译 |
 
 #### 命令一览
 
 ```bash
 ./build.sh help              # 查看帮助
+./build.sh install-deps      # 一键安装编译依赖
 ./build.sh quick             # 一条龙：更新子模块 + menuconfig + 编译 + 打包
 ./build.sh defconfig         # 仅生成 .config
 ./build.sh menuconfig        # 打开 menuconfig 界面编辑 .config
@@ -489,6 +525,18 @@ SUSFS 补丁源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
 
 本项目面向研究、开发和设备适配用途。刷写或使用自定义内核可能导致设备
 无法启动、数据丢失、功能异常或安全边界变化。请在充分备份并了解风险后使用。
+
+## 鸣谢
+
+本项目基于以下开源项目，感谢它们的贡献：
+
+- [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) — 内核级 root 管理和模块扩展框架
+- [SUSFS (susfs4ksu)](https://gitlab.com/simonpunk/susfs4ksu) — 内核级 root 隐藏和文件系统隔离补丁
+- [DroidSpaces](https://github.com/ravindu644/Droidspaces-OSS) — Android/Linux 容器化用户空间支持
+- [AnyKernel3](https://github.com/osm0sis/AnyKernel3) — Android 内核刷机包打包工具
+- [Linux Kernel](https://www.kernel.org/) — Android Common Kernel `android15-6.6`
+
+> 如需其他功能或有任何问题，请 [提交 Issue](https://github.com/ZHYxulei/miro-kernel-ultra/issues)。
 
 ## 开源许可证
 

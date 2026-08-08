@@ -24,6 +24,7 @@
 #   bash build.sh mrproper      Full source tree clean (make mrproper + deepclean)
 #   bash build.sh toolchain     Show current toolchain configuration
 #   bash build.sh update-submodules  Update KernelSU and AnyKernel3 to latest upstream
+#   bash build.sh install-deps  Install build dependencies (apt/dnf/pacman)
 #
 # Environment variables:
 #   CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
@@ -249,6 +250,44 @@ check_prerequisites() {
         exit 1
     fi
     log "Clang version: $(clang --version | head -1)"
+}
+
+install_deps() {
+    log "Installing build dependencies..."
+
+    # Common packages (same name across distros)
+    local common_pkgs="clang lld llvm flex bison bc cpio zip git ccache"
+
+    if command -v apt >/dev/null 2>&1; then
+        # Debian/Ubuntu
+        log "Detected: apt (Debian/Ubuntu)"
+        sudo apt update
+        sudo apt install -y $common_pkgs \
+            device-tree-compiler libelf-dev libssl-dev libncurses-dev
+    elif command -v dnf >/dev/null 2>&1; then
+        # Fedora/RHEL
+        log "Detected: dnf (Fedora/RHEL)"
+        sudo dnf install -y $common_pkgs \
+            dtc elfutils-libelf-devel openssl-devel ncurses-devel
+    elif command -v pacman >/dev/null 2>&1; then
+        # Arch Linux
+        log "Detected: pacman (Arch Linux)"
+        sudo pacman -S --noconfirm $common_pkgs \
+            dtc libelf openssl ncurses
+    elif command -v zypper >/dev/null 2>&1; then
+        # openSUSE
+        log "Detected: zypper (openSUSE)"
+        sudo zypper install -y $common_pkgs \
+            dtc libelf-devel libopenssl-devel ncurses-devel
+    else
+        error "Unsupported package manager. Please install manually:"
+        error "  clang lld llvm flex bison bc cpio dtc zip git ccache"
+        error "  libelf-dev libssl-dev libncurses-dev"
+        exit 1
+    fi
+
+    log "Dependencies installed successfully."
+    log "You can now run: ./build.sh quick"
 }
 
 show_toolchain() {
@@ -681,6 +720,7 @@ Commands:
   package     Package AnyKernel3 zip from existing out/dist outputs
   modules     Install kernel modules (run after 'kernel')
   toolchain   Show current toolchain configuration
+  install-deps  Install build dependencies (apt/dnf/pacman/zypper)
   clean       Clean build directory (preserves .config)
   deepclean   Deep clean: out/ + AnyKernel3/ + KernelSU artifacts + stale files
   mrproper    Full source tree clean (make mrproper + deepclean)
@@ -707,6 +747,7 @@ Tips for faster builds:
 
 Examples:
   bash build.sh quick                                  # One-command: update+menuconfig+build+package
+  bash build.sh install-deps                           # Install build dependencies
   bash build.sh zip                                    # Full build + flashable zip
   bash build.sh all                                    # Full build without packaging
   bash build.sh fast                                   # Quick build (no modules)
@@ -722,6 +763,9 @@ Examples:
   CLANG_PATH=/opt/clang/bin bash build.sh zip          # Build with custom clang
   USE_CCACHE=0 bash build.sh all                       # Disable ccache
   FAST_BUILD=1 bash build.sh zip                        # Fast zip (no modules in zip)
+
+Project: https://github.com/ZHYxulei/miro-kernel-ultra
+Issues:  https://github.com/ZHYxulei/miro-kernel-ultra/issues
 EOF
 }
 
@@ -794,6 +838,9 @@ main() {
             ;;
         toolchain)
             show_toolchain
+            ;;
+        install-deps)
+            install_deps
             ;;
         clean)
             clean
