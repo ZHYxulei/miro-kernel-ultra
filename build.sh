@@ -13,7 +13,9 @@
 #
 # Usage:
 #   bash build.sh help          Show help
+#   bash build.sh quick         One-command: update submodules + menuconfig + compile + package
 #   bash build.sh defconfig     Only generate .config
+#   bash build.sh menuconfig    Open menuconfig UI to edit .config
 #   bash build.sh kernel        Build kernel (Image + modules + dtbs)
 #   bash build.sh all           Build kernel and copy outputs to out/dist
 #   bash build.sh zip           Build kernel and package AnyKernel3 flashable zip
@@ -21,6 +23,7 @@
 #   bash build.sh deepclean     Deep clean: out/ + AnyKernel3/ + submodule artifacts
 #   bash build.sh mrproper      Full source tree clean (make mrproper + deepclean)
 #   bash build.sh toolchain     Show current toolchain configuration
+#   bash build.sh update-submodules  Update KernelSU and AnyKernel3 to latest upstream
 #
 # Environment variables:
 #   CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
@@ -153,6 +156,9 @@ ANYKERNEL3_ZIP="miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip"
 # Kernel name shown in AnyKernel3 installer
 KERNEL_NAME="miro-kernel-ultra"
 
+# Error log file (set during build)
+ERROR_LOG=""
+
 START_SEC=$(date +%s)
 
 # ============================================================
@@ -170,6 +176,59 @@ error() {
 elapsed() {
     local sec=$(( $(date +%s) - START_SEC ))
     echo "$((sec / 60))m $((sec % 60))s"
+}
+
+# Display compilation errors extracted from build log.
+# Shows up to 10 errors with surrounding context for easy debugging.
+show_build_errors() {
+    local log_file="${1:-${ERROR_LOG}}"
+
+    [ -f "$log_file" ] || return 0
+
+    # Common kernel build error patterns
+    local error_patterns='(error:|fatal error:|Error [0-9]|undefined reference|No rule to make target|recipe for target.*failed)'
+
+    # Find error lines (limit to first 30 matches)
+    local error_lines
+    error_lines=$(grep -n -E "$error_patterns" "$log_file" 2>/dev/null | head -30)
+
+    if [ -z "$error_lines" ]; then
+        # No specific error pattern found, show last 30 lines of output
+        echo ""
+        error "Build failed. Last 30 lines of build output:"
+        echo ""
+        tail -30 "$log_file" 2>/dev/null | sed 's/^/  /'
+        echo ""
+        return 0
+    fi
+
+    echo ""
+    echo -e "\033[1;41m═══════════════════════════════════════════════════════════════════\033[0m"
+    echo -e "\033[1;41m  编译错误汇总                                                       \033[0m"
+    echo -e "\033[1;41m═══════════════════════════════════════════════════════════════════\033[0m"
+    echo ""
+
+    local shown=0
+    local line_num
+    while IFS= read -r line; do
+        [ "$shown" -ge 10 ] && break
+        line_num=$(echo "$line" | cut -d: -f1)
+        echo -e "\033[1;33m━━━ 错误 #$((shown + 1)) (日志行 $line_num) ━━━\033[0m"
+        # Show context: 2 lines before, the error line, 2 lines after
+        local start=$(( line_num > 2 ? line_num - 2 : 1 ))
+        local end=$(( line_num + 2 ))
+        sed -n "${start},${end}p" "$log_file" 2>/dev/null | sed 's/^/  /'
+        echo ""
+        shown=$(( shown + 1 ))
+    done <<< "$error_lines"
+
+    if [ "$shown" -ge 10 ]; then
+        echo -e "\033[1;33m  (仅显示前 10 个错误，更多错误请查看完整日志)\033[0m"
+        echo ""
+    fi
+
+    echo -e "\033[1;31m  完整编译日志: $log_file\033[0m"
+    echo ""
 }
 
 # ============================================================
@@ -311,13 +370,27 @@ make_defconfig() {
 }
 
 build_kernel() {
+    mkdir -p "${OUT_DIR}"
+    ERROR_LOG="${OUT_DIR}/build.log"
+
+    set +e
     if [ "${FAST_BUILD}" = "1" ]; then
         log "Building kernel (fast: Image + dtbs only, no modules)..."
-        make "${MAKE_ARGS[@]}" Image dtbs
+        make "${MAKE_ARGS[@]}" Image dtbs 2>&1 | tee "${ERROR_LOG}"
     else
         log "Building kernel (Image + modules + dtbs)..."
-        make "${MAKE_ARGS[@]}" Image modules dtbs
+        make "${MAKE_ARGS[@]}" Image modules dtbs 2>&1 | tee "${ERROR_LOG}"
     fi
+    local make_status=${PIPESTATUS[0]}
+    set -e
+
+    if [ "$make_status" -ne 0 ]; then
+        show_build_errors "${ERROR_LOG}"
+        error "Kernel build failed! (exit code: ${make_status})"
+        error "Full log: ${ERROR_LOG}"
+        exit 1
+    fi
+
     log "Kernel build completed in $(elapsed)"
 }
 
@@ -359,7 +432,18 @@ copy_outputs() {
 
 install_modules() {
     log "Installing kernel modules..."
-    make "${MAKE_ARGS[@]}" INSTALL_MOD_PATH=${OUT_DIR}/modules_install modules_install
+    local mod_log="${OUT_DIR}/modules_install.log"
+    set +e
+    make "${MAKE_ARGS[@]}" INSTALL_MOD_PATH=${OUT_DIR}/modules_install modules_install 2>&1 | tee "$mod_log"
+    local mod_status=${PIPESTATUS[0]}
+    set -e
+
+    if [ "$mod_status" -ne 0 ]; then
+        show_build_errors "$mod_log"
+        error "Module install failed! (exit code: ${mod_status})"
+        exit 1
+    fi
+
     # Remove symlinks and build artifacts
     rm -f "${OUT_DIR}/modules_install/lib/modules/"*/build
     rm -f "${OUT_DIR}/modules_install/lib/modules/"*/source
@@ -487,15 +571,23 @@ mrproper() {
     make "${MAKE_ARGS[@]}" mrproper 2>/dev/null || log "  make mrproper had warnings (ignored)"
     rm -rf "${OUT_DIR}"
 
-    # Also deepclean AnyKernel3 and submodule artifacts
+    # Clean AnyKernel3 build artifacts (preserve submodule directory)
     if [ -d "${ANYKERNEL3_DIR}" ]; then
-        rm -rf "${ANYKERNEL3_DIR}"
-        log "  Removed ${ANYKERNEL3_DIR}/"
+        rm -f "${ANYKERNEL3_DIR}/Image" "${ANYKERNEL3_DIR}/dtb" "${ANYKERNEL3_DIR}/dtbo.img"
+        rm -rf "${ANYKERNEL3_DIR}/modules"
+        log "  Cleaned AnyKernel3 build artifacts (submodule preserved)"
     fi
+
+    # Clean KernelSU submodule build artifacts
     if [ -d "KernelSU/kernel" ]; then
-        rm -f KernelSU/kernel/built-in.a
+        rm -f KernelSU/kernel/built-in.a KernelSU/kernel/modules.order
+        find KernelSU/kernel -name '*.o' -delete 2>/dev/null || true
+        find KernelSU/kernel -name '*.cmd' -delete 2>/dev/null || true
         log "  Cleaned KernelSU submodule artifacts"
     fi
+
+    # Remove stale config files from source root
+    rm -f .config .config.old .tmp_defconfig
 
     log "mrproper complete."
 }
@@ -527,6 +619,50 @@ menuconfig() {
     log "Configuration saved to ${OUT_DIR}/.config"
 }
 
+# Quick build: update submodules → menuconfig → compile → package
+# One-command workflow for full build with interactive configuration.
+quick() {
+    log "=== Quick Build: update → menuconfig → compile → package ==="
+
+    # Step 1: Update submodules to latest upstream
+    update_submodules
+
+    # Step 2: Check prerequisites and setup toolchain
+    check_prerequisites
+
+    # Step 3: Initialize submodules
+    init_submodules
+
+    # Step 4: Clean source tree
+    clean_source_tree
+
+    # Step 5: Generate defconfig (merge all fragments, apply post-config)
+    make_defconfig
+
+    # Step 6: Launch menuconfig for user customization
+    echo ""
+    log "Opening menuconfig for kernel configuration..."
+    log "  - Customize options as needed, then save and exit"
+    log "  - To use defaults, simply exit without changes"
+    echo ""
+    make "${MAKE_ARGS[@]}" menuconfig
+    log "Configuration saved to ${OUT_DIR}/.config"
+
+    # Step 7: Build kernel (with error capture)
+    build_kernel
+
+    # Step 8: Install kernel modules
+    install_modules
+
+    # Step 9: Copy outputs to dist directory
+    copy_outputs
+
+    # Step 10: Package AnyKernel3 flashable zip
+    package_anykernel3
+
+    log "=== Quick build completed in $(elapsed) ==="
+}
+
 show_help() {
     cat << 'EOF'
 build.sh - Build script for miro-kernel-ultra
@@ -535,6 +671,7 @@ Usage: bash build.sh <command>
 
 Commands:
   help        Show this help message
+  quick       One-command build: update submodules → menuconfig → compile → package
   defconfig   Generate .config (merge gki_defconfig + vendor fragments)
   menuconfig  Open kernel menuconfig UI to edit .config interactively
   kernel      Build kernel (defconfig + Image + modules + dtbs)
@@ -569,11 +706,13 @@ Tips for faster builds:
   4. Increase jobs:  JOBS=$(nproc) bash build.sh all
 
 Examples:
+  bash build.sh quick                                  # One-command: update+menuconfig+build+package
   bash build.sh zip                                    # Full build + flashable zip
   bash build.sh all                                    # Full build without packaging
   bash build.sh fast                                   # Quick build (no modules)
   bash build.sh kernel                                 # Just build kernel
   bash build.sh defconfig                              # Just generate config
+  bash build.sh menuconfig                             # Edit .config interactively
   bash build.sh package                                # Re-package zip from existing build
   bash build.sh toolchain                              # Show toolchain info
   bash build.sh clean                                  # Clean out/ (keep .config)
@@ -596,6 +735,9 @@ main() {
     case "$cmd" in
         help|-h)
             show_help
+            ;;
+        quick)
+            quick
             ;;
         defconfig)
             check_prerequisites

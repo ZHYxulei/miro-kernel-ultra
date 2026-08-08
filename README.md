@@ -18,11 +18,13 @@
 | 功能 | 状态 |
 | --- | --- |
 | `miro` ARM64 内核构建 | 已支持 |
-| 独立编译脚本 `build.sh` | 已支持（LLVM 工具链 + AnyKernel3 打包） |
+| 独立编译脚本 `build.sh` | 已支持（LLVM 工具链 + AnyKernel3 打包 + 错误捕获） |
+| 一条龙编译命令 `quick` | 已支持（更新子模块 + menuconfig + 编译 + 打包） |
 | GKI `perf` / `consolidate` 构建变体 | 已支持 |
 | DroidSpaces 配置片段 | 已接入构建配置 |
 | SUSFS | 已接入 |
 | ReSukiSU/KernelSU | 已接入（子模块） |
+| AnyKernel3 刷机包打包 | 已支持（子模块） |
 | 稳定性、性能和功耗优化 | 持续进行 |
 
 当前 DroidSpaces 配置位于
@@ -60,11 +62,21 @@ ReSukiSU/KernelSU 已作为 git 子模块接入，源码位于 `KernelSU/`（上
 
 ### 1. 克隆仓库
 
+**推荐使用 SSH 协议**克隆代码库，不建议使用 HTTPS 协议。SSH 协议的优势：
+
+- **无需重复输入密码**：配置 SSH 密钥后自动认证，无需每次输入用户名和密码
+- **更高的安全性**：SSH 使用非对称加密进行身份验证，比 HTTPS 的密码认证更安全
+- **更好的稳定性**：不受 GitHub HTTPS 限流影响，大仓库克隆更稳定
+
 ```bash
-git clone --recursive https://github.com/ZHYxulei/miro-kernel-ultra.git
+git clone --recursive git@github.com:ZHYxulei/miro-kernel-ultra.git
 ```
 
-`--recursive` 会在克隆时自动初始化并拉取 `KernelSU` 子模块。
+> 如果尚未配置 SSH 密钥，请参考 [GitHub SSH 密钥配置指南](https://docs.github.com/en/authentication/connecting-to-github-with-ssh)。
+> 在没有 SSH 密钥的环境下，也可使用 HTTPS 作为备选：
+> `git clone --recursive https://github.com/ZHYxulei/miro-kernel-ultra.git`
+
+`--recursive` 会在克隆时自动初始化并拉取 `KernelSU` 和 `AnyKernel3` 子模块。
 
 如果已经克隆但未带 `--recursive`，需要手动初始化子模块：
 
@@ -79,6 +91,7 @@ git submodule update --init --recursive
 git submodule status
 # 预期输出：
 #  058cdc931016cb2cb769ed063cce6d65d6df61e0 KernelSU (v4.1.0-1338-g058cdc93)
+#  <hash> AnyKernel3 (...)
 ```
 
 确认驱动符号链接已就绪：
@@ -88,7 +101,65 @@ ls -l drivers/kernelsu
 # 预期输出：drivers/kernelsu -> ../KernelSU/kernel
 ```
 
-### 2. 独立编译（build.sh）
+### 2. 脚本准备
+
+拉取代码后，为构建脚本添加可执行权限：
+
+```bash
+chmod +x build.sh
+```
+
+之后可以直接使用 `./build.sh <command>` 执行脚本，无需每次输入 `bash`。
+
+### 3. 模块更新
+
+项目包含 `KernelSU` 和 `AnyKernel3` 两个 git 子模块。使用以下命令将子模块更新至上游最新版本：
+
+```bash
+./build.sh update-submodules
+```
+
+该命令会：
+
+1. 拉取所有子模块的上游最新代码
+2. 将子模块指针切换到上游 `origin/HEAD`
+3. 暂存更新后的子模块指针（`git add`）
+4. 显示更新后的子模块状态
+
+更新后需要手动提交以保存变更：
+
+```bash
+git commit -m "update submodules to latest upstream"
+```
+
+### 4. 一条龙编译（quick 命令）
+
+使用 `quick` 命令实现全自动编译流程，一条命令完成从更新到打包的全部步骤：
+
+```bash
+./build.sh quick
+```
+
+该命令依次执行以下步骤：
+
+1. **更新子模块**：拉取 `KernelSU` 和 `AnyKernel3` 的最新上游代码
+2. **检查依赖**：验证编译工具链是否完整
+3. **生成默认配置**：合并所有 defconfig 片段，生成 `.config` 文件
+4. **弹出 menuconfig**：打开交互式配置界面，允许用户自定义内核配置
+   - 如需自定义：修改配置后保存并退出
+   - 如使用默认值：直接退出即可（不修改 = 使用默认配置）
+5. **编译内核**：编译 Image + modules + dtbs（含错误捕获）
+6. **安装模块**：将内核模块安装到 `out/modules_install/`
+7. **复制产物**：将构建产物复制到 `out/dist/`
+8. **打包刷机包**：生成 AnyKernel3 刷机 zip
+
+生成的刷机包位于：
+
+```text
+out/dist/miro-kernel-ultra-YYYYMMDD-HHMM.zip
+```
+
+### 5. 独立编译（build.sh）
 
 #### 依赖安装
 
@@ -100,20 +171,27 @@ apt install clang lld llvm flex bison bc cpio device-tree-compiler \
 #### 命令一览
 
 ```bash
-bash build.sh help          # 查看帮助
-bash build.sh defconfig     # 仅生成 .config
-bash build.sh kernel        # 编译内核（Image + modules + dtbs）
-bash build.sh all           # 编译 + 安装模块 + 输出到 out/dist
-bash build.sh zip           # 编译 + 打包 AnyKernel3 刷机包
-bash build.sh package       # 从已有 out/dist 重新打包 AnyKernel3
-bash build.sh clean         # 清理构建产物（保留 .config）
-bash build.sh mrproper      # 深度清理（包括 .config）
+./build.sh help              # 查看帮助
+./build.sh quick             # 一条龙：更新子模块 + menuconfig + 编译 + 打包
+./build.sh defconfig         # 仅生成 .config
+./build.sh menuconfig        # 打开 menuconfig 界面编辑 .config
+./build.sh kernel            # 编译内核（Image + modules + dtbs）
+./build.sh fast              # 快速编译（仅 Image + dtbs，不含 modules）
+./build.sh all               # 编译 + 安装模块 + 输出到 out/dist
+./build.sh zip               # 编译 + 打包 AnyKernel3 刷机包
+./build.sh package           # 从已有 out/dist 重新打包 AnyKernel3
+./build.sh modules           # 安装内核模块（在 kernel 之后执行）
+./build.sh toolchain         # 显示当前工具链配置
+./build.sh clean             # 清理构建产物（保留 .config）
+./build.sh deepclean         # 深度清理（out/ + AnyKernel3 产物 + 子模块产物）
+./build.sh mrproper          # 完全清理（make mrproper + deepclean）
+./build.sh update-submodules # 更新 KernelSU 和 AnyKernel3 到最新上游
 ```
 
 #### 完整编译并打包刷机包
 
 ```bash
-bash build.sh zip
+./build.sh zip
 ```
 
 该命令会依次执行：
@@ -124,7 +202,7 @@ bash build.sh zip
 5. 编译内核（Image + modules + dtbs）
 6. 安装内核模块
 7. 复制构建产物到 `out/dist/`
-8. 克隆/复用 AnyKernel3 模板，注入内核产物并生成刷机 zip
+8. 使用 AnyKernel3 子模块，注入内核产物并生成刷机 zip
 
 生成的刷机包位于：
 
@@ -143,6 +221,7 @@ out/dist/miro-kernel-ultra-YYYYMMDD-HHMM.zip
 | `out/dist/vmlinux` | 未压缩内核（调试用） |
 | `out/dist/System.map` | 符号表 |
 | `out/dist/.config` | 最终内核配置 |
+| `out/build.log` | 编译日志（含错误捕获） |
 
 #### 配置说明
 
@@ -156,7 +235,134 @@ defconfig 片段：
 
 合并后通过 `olddefconfig` 自动解析新增的 Kconfig 选项，避免交互式提示。
 
-### 3. Kleaf/Bazel 构建
+如需手动修改内核配置，可使用 `menuconfig` 命令打开交互式配置界面：
+
+```bash
+./build.sh menuconfig
+```
+
+在 menuconfig 中修改配置后保存退出即可。若 `.config` 不存在，脚本会先自动生成默认配置。
+
+#### 错误处理
+
+`build.sh` 内置了编译错误捕获和显示功能，无需在大量输出中手动查找错误：
+
+- **实时日志记录**：编译输出同时显示在终端并保存到 `out/build.log`
+- **自动错误提取**：编译失败时，脚本自动从日志中提取错误信息
+- **醒目错误展示**：以红色高亮显示错误汇总，包含：
+  - 错误编号和日志行号
+  - 错误前后各 2 行上下文代码
+  - 最多显示前 10 个错误（避免输出过长）
+- **完整日志路径**：提示完整日志文件位置，方便深入排查
+
+支持的错误模式包括：`error:`、`fatal error:`、`Error N`、`undefined reference`、`No rule to make target`、`recipe for target failed` 等。
+
+编译失败时的输出示例：
+
+```text
+[build.sh] Building kernel (Image + modules + dtbs)...
+... (编译输出) ...
+
+═══════════════════════════════════════════════════════════════════
+  编译错误汇总
+═══════════════════════════════════════════════════════════════════
+
+━━━ 错误 #1 (日志行 1234) ━━━
+  drivers/usb/dwc3/dwc3-msm-core.c: In function 'dwc3_msm_probe':
+  drivers/usb/dwc3/dwc3-msm-core.c:567:9: error: implicit declaration of function 'mca_sysfs_init'
+    567 |         mca_sysfs_init(pdev);
+        |         ^~~~~~~~~~~~~
+
+  完整编译日志: out/build.log
+```
+
+#### 环境变量
+
+`build.sh` 支持以下环境变量进行自定义配置：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CLANG_PATH` | 系统 PATH | 自定义 clang 工具链目录（如 `/opt/clang/bin`） |
+| `GCC_PATH` | 系统 PATH | 自定义 GCC 交叉编译器目录（`aarch64-linux-gnu-gcc`） |
+| `JOBS` | `nproc --all` | 编译并行任务数 |
+| `KERNEL_NAME` | `miro-kernel-ultra` | AnyKernel3 安装包中显示的内核名称 |
+| `OUT_DIR` | `out` | 构建输出目录 |
+| `USE_CCACHE` | 自动检测 | 设为 `1` 启用 ccache，`0` 禁用 |
+| `CCACHE_DIR` | `~/.ccache` | ccache 缓存目录 |
+| `FAST_BUILD` | 未设置 | 设为 `1` 跳过模块编译，仅编译 Image + dtbs |
+
+使用示例：
+
+```bash
+# 使用自定义工具链编译
+CLANG_PATH=/opt/clang/bin GCC_PATH=/opt/gcc/bin ./build.sh zip
+
+# 限制并行任务数
+JOBS=4 ./build.sh all
+
+# 禁用 ccache
+USE_CCACHE=0 ./build.sh all
+
+# 快速编译（不含模块）
+FAST_BUILD=1 ./build.sh zip
+
+# 将输出目录放在 tmpfs 加速编译
+OUT_DIR=/tmp/kernel-build ./build.sh zip
+```
+
+#### 加速编译技巧
+
+1. **安装 ccache**（推荐）：首次编译后，后续编译速度提升 3-5 倍
+   ```bash
+   apt install ccache && ccache -M 50G
+   ```
+
+2. **使用 `fast` 命令**：跳过模块编译，减少约 40% 编译时间
+   ```bash
+   ./build.sh fast
+   ```
+
+3. **将输出放在 tmpfs**（内存盘）上：
+   ```bash
+   mkdir -p /tmp/build && OUT_DIR=/tmp/build ./build.sh all
+   ```
+
+4. **调整并行任务数**：
+   ```bash
+   JOBS=$(nproc) ./build.sh all
+   ```
+
+#### 常见问题
+
+**Q: 编译报错 "The source tree is not clean"**
+
+A: 脚本会自动清理源码树中的 `.config` 等残留文件。如果仍然报错，执行 `./build.sh deepclean` 后重试。
+
+**Q: 编译报错 "Missing tools: ..."**
+
+A: 安装缺失的依赖：`apt install clang lld llvm flex bison bc cpio device-tree-compiler libelf-dev libssl-dev libncurses-dev zip`
+
+**Q: 编译报错找不到 `drivers/kernelsu` 符号链接**
+
+A: 未初始化子模块。执行 `git submodule update --init --recursive` 或 `./build.sh update-submodules`。
+
+**Q: menuconfig 界面无法正常显示**
+
+A: 确保安装了 `libncurses-dev`，且终端窗口足够大（至少 19 行 x 80 列）。
+
+**Q: 编译速度太慢**
+
+A: 参考上方的「加速编译技巧」部分，推荐安装 ccache。
+
+**Q: 如何只修改配置不重新编译？**
+
+A: 使用 `./build.sh menuconfig` 修改配置，然后使用 `./build.sh kernel` 仅编译内核。
+
+**Q: `mrproper` 会删除 AnyKernel3 子模块吗？**
+
+A: 不会。`mrproper` 只清理 AnyKernel3 目录中的构建产物（Image、dtb、modules），保留子模块本身。`deepclean` 同理。
+
+### 6. Kleaf/Bazel 构建
 
 在 Android Kernel 工作区根目录执行：
 
@@ -172,7 +378,7 @@ out/msm-kernel-miro-perf/dist/
 out/msm-kernel-miro-consolidate/dist/
 ```
 
-### 4. 传统 build.config 流程
+### 7. 传统 build.config 流程
 
 传统配置入口为：
 
