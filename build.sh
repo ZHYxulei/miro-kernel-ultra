@@ -366,11 +366,14 @@ install_modules() {
 }
 
 setup_anykernel3() {
-    if [ -d "${ANYKERNEL3_DIR}" ]; then
-        log "AnyKernel3 directory found, using existing."
-    else
-        log "Cloning AnyKernel3..."
+    if [ -d "${ANYKERNEL3_DIR}/.git" ]; then
+        log "AnyKernel3 submodule found, using existing."
+    elif [ -n "${ANYKERNEL3_REPO}" ]; then
+        log "AnyKernel3 not initialized, cloning..."
         git clone --depth=1 "${ANYKERNEL3_REPO}" "${ANYKERNEL3_DIR}"
+    else
+        error "AnyKernel3 not found. Run: git submodule update --init AnyKernel3"
+        exit 1
     fi
 }
 
@@ -452,10 +455,11 @@ deepclean() {
     rm -rf "${OUT_DIR}"
     log "  Removed ${OUT_DIR}/"
 
-    # Remove AnyKernel3 clone
+    # Clean AnyKernel3 build artifacts (not the submodule itself)
     if [ -d "${ANYKERNEL3_DIR}" ]; then
-        rm -rf "${ANYKERNEL3_DIR}"
-        log "  Removed ${ANYKERNEL3_DIR}/"
+        rm -f "${ANYKERNEL3_DIR}/Image" "${ANYKERNEL3_DIR}/dtb" "${ANYKERNEL3_DIR}/dtbo.img"
+        rm -rf "${ANYKERNEL3_DIR}/modules"
+        log "  Cleaned AnyKernel3 build artifacts"
     fi
 
     # Remove stale config files from source root
@@ -496,6 +500,20 @@ mrproper() {
     log "mrproper complete."
 }
 
+update_submodules() {
+    log "Updating submodules to latest upstream..."
+
+    # Fetch latest from upstream for all submodules
+    git submodule foreach 'git fetch origin && git checkout origin/HEAD && echo "Updated: $(basename $(pwd)) -> $(git log --oneline -1)"'
+
+    # Stage the updated submodule pointers
+    git add KernelSU AnyKernel3
+    log "Submodule pointers staged. Run 'git commit' to save changes."
+    log ""
+    log "Submodule status:"
+    git submodule status
+}
+
 show_help() {
     cat << 'EOF'
 build.sh - Build script for miro-kernel-ultra
@@ -515,6 +533,7 @@ Commands:
   clean       Clean build directory (preserves .config)
   deepclean   Deep clean: out/ + AnyKernel3/ + KernelSU artifacts + stale files
   mrproper    Full source tree clean (make mrproper + deepclean)
+  update-submodules  Update KernelSU and AnyKernel3 to latest upstream
 
 Environment variables:
   CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
@@ -545,6 +564,7 @@ Examples:
   bash build.sh toolchain                              # Show toolchain info
   bash build.sh clean                                  # Clean out/ (keep .config)
   bash build.sh deepclean                              # Remove all build artifacts
+  bash build.sh update-submodules                      # Update KernelSU + AnyKernel3 to upstream
   bash build.sh mrproper                               # Full source tree clean
   CLANG_PATH=/opt/clang/bin bash build.sh zip          # Build with custom clang
   USE_CCACHE=0 bash build.sh all                       # Disable ccache
@@ -624,6 +644,9 @@ main() {
             ;;
         mrproper)
             mrproper
+            ;;
+        update-submodules)
+            update_submodules
             ;;
         *)
             error "Unknown command: $cmd"

@@ -2,3 +2,7 @@
 	path = KernelSU
 	url = https://github.com/ReSukiSU/ReSukiSU.git
 	ignore = untracked
+[submodule "AnyKernel3"]
+	path = AnyKernel3
+	url = https://github.com/osm0sis/AnyKernel3.git
+	ignore = untracked
