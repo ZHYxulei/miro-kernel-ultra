@@ -37,13 +37,13 @@
 #   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
 #
 # AnyKernel3 configuration (optional):
-#   AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 0)
-#   AK3_DEVICE_NAME1  Device name 1 (e.g. miro)
+#   AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 1)
+#   AK3_DEVICE_NAME1  Device name 1 (e.g. missi)
 #   AK3_DEVICE_NAME2  Device name 2
 #   AK3_DEVICE_NAME3  Device name 3
 #   AK3_DEVICE_NAME4  Device name 4
 #   AK3_DEVICE_NAME5  Device name 5
-#   AK3_BLOCK         Partition to flash (default: auto, e.g. boot, init_boot)
+#   AK3_BLOCK         Partition to flash (default: boot, e.g. auto, init_boot)
 #   AK3_SLOT_DEVICE   A/B slot device: 1, 0, or auto (default: 1)
 #   AK3_PATCH_VBMETA  Patch vbmeta to disable AVB: 1, 0, or auto (default: auto)
 #
@@ -169,13 +169,13 @@ ANYKERNEL3_ZIP="miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip"
 KERNEL_NAME="miro-kernel-ultra"
 
 # AnyKernel3 configuration (overridable via environment variables)
-AK3_DEVICE_CHECK="${AK3_DEVICE_CHECK:-0}"
-AK3_DEVICE_NAME1="${AK3_DEVICE_NAME1:-miro}"
+AK3_DEVICE_CHECK="${AK3_DEVICE_CHECK:-1}"
+AK3_DEVICE_NAME1="${AK3_DEVICE_NAME1:-missi}"
 AK3_DEVICE_NAME2="${AK3_DEVICE_NAME2:-}"
 AK3_DEVICE_NAME3="${AK3_DEVICE_NAME3:-}"
 AK3_DEVICE_NAME4="${AK3_DEVICE_NAME4:-}"
 AK3_DEVICE_NAME5="${AK3_DEVICE_NAME5:-}"
-AK3_BLOCK="${AK3_BLOCK:-auto}"
+AK3_BLOCK="${AK3_BLOCK:-boot}"
 AK3_SLOT_DEVICE="${AK3_SLOT_DEVICE:-1}"
 AK3_PATCH_VBMETA="${AK3_PATCH_VBMETA:-auto}"
 
@@ -784,13 +784,13 @@ Environment variables:
   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
 
 AnyKernel3 configuration:
-  AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 0)
-  AK3_DEVICE_NAME1  Device name 1, e.g. miro (default: miro)
+  AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 1)
+  AK3_DEVICE_NAME1  Device name 1, e.g. missi (default: missi)
   AK3_DEVICE_NAME2  Device name 2 (default: empty)
   AK3_DEVICE_NAME3  Device name 3 (default: empty)
   AK3_DEVICE_NAME4  Device name 4 (default: empty)
   AK3_DEVICE_NAME5  Device name 5 (default: empty)
-  AK3_BLOCK         Partition to flash (default: auto, e.g. boot, init_boot)
+  AK3_BLOCK         Partition to flash (default: boot, e.g. auto, init_boot)
   AK3_SLOT_DEVICE   A/B slot device: 1, 0, or auto (default: 1)
   AK3_PATCH_VBMETA  Patch vbmeta to disable AVB: 1, 0, or auto (default: auto)
 
@@ -821,7 +821,7 @@ Examples:
   CLANG_PATH=/opt/clang/bin bash build.sh zip          # Build with custom clang
   USE_CCACHE=0 bash build.sh all                       # Disable ccache
   FAST_BUILD=1 bash build.sh zip                        # Fast zip (no modules in zip)
-  AK3_DEVICE_CHECK=1 AK3_DEVICE_NAME1=miro bash build.sh zip  # Enable device check
+  AK3_DEVICE_CHECK=1 AK3_DEVICE_NAME1=missi bash build.sh zip  # Enable device check
   AK3_BLOCK=init_boot bash build.sh zip                # Flash to init_boot partition
 
 Project: https://github.com/ZHYxulei/miro-kernel-ultra

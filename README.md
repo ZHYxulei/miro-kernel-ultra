@@ -352,13 +352,13 @@ OUT_DIR=/tmp/kernel-build ./build.sh zip
 
 | 环境变量 | 默认值 | 对应参数 | 说明 |
 | --- | --- | --- | --- |
-| `AK3_DEVICE_CHECK` | `0` | `do.devicecheck=` | 设为 `1` 开启设备名称检测，`0` 关闭 |
-| `AK3_DEVICE_NAME1` | `miro` | `device.name1=` | 设备名称 1（开发代号或设备名称） |
+| `AK3_DEVICE_CHECK` | `1` | `do.devicecheck=` | 设为 `1` 开启设备名称检测，`0` 关闭 |
+| `AK3_DEVICE_NAME1` | `missi` | `device.name1=` | 设备名称 1（开发代号或设备名称） |
 | `AK3_DEVICE_NAME2` | 空 | `device.name2=` | 设备名称 2 |
 | `AK3_DEVICE_NAME3` | 空 | `device.name3=` | 设备名称 3 |
 | `AK3_DEVICE_NAME4` | 空 | `device.name4=` | 设备名称 4 |
 | `AK3_DEVICE_NAME5` | 空 | `device.name5=` | 设备名称 5 |
-| `AK3_BLOCK` | `auto` | `BLOCK=` | 刷写的分区（如 `boot`、`init_boot`、`auto`） |
+| `AK3_BLOCK` | `boot` | `BLOCK=` | 刷写的分区（如 `boot`、`init_boot`、`auto`） |
 | `AK3_SLOT_DEVICE` | `1` | `IS_SLOT_DEVICE=` | A/B 插槽设备：`1` 开启、`0` 关闭、`auto` 自动判断 |
 | `AK3_PATCH_VBMETA` | `auto` | `PATCH_VBMETA_FLAG=` | 修补 vbmeta 关闭 AVB 验证：`1` 开启、`0` 关闭、`auto` 自动判断 |
 
@@ -366,7 +366,7 @@ OUT_DIR=/tmp/kernel-build ./build.sh zip
 
 ```bash
 # 开启设备检测并设置设备名称
-AK3_DEVICE_CHECK=1 AK3_DEVICE_NAME1=miro AK3_DEVICE_NAME2=mipro ./build.sh zip
+AK3_DEVICE_CHECK=1 AK3_DEVICE_NAME1=missi AK3_DEVICE_NAME2=mipro ./build.sh zip
 
 # 刷写到 init_boot 分区（GKI 设备常用）
 AK3_BLOCK=init_boot ./build.sh zip
