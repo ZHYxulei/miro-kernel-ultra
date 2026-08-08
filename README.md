@@ -346,6 +346,41 @@ FAST_BUILD=1 ./build.sh zip
 OUT_DIR=/tmp/kernel-build ./build.sh zip
 ```
 
+#### AnyKernel3 配置
+
+`build.sh` 支持通过环境变量自定义 AnyKernel3 刷机包的配置项（对应 `anykernel.sh` 中的参数）：
+
+| 环境变量 | 默认值 | 对应参数 | 说明 |
+| --- | --- | --- | --- |
+| `AK3_DEVICE_CHECK` | `0` | `do.devicecheck=` | 设为 `1` 开启设备名称检测，`0` 关闭 |
+| `AK3_DEVICE_NAME1` | `miro` | `device.name1=` | 设备名称 1（开发代号或设备名称） |
+| `AK3_DEVICE_NAME2` | 空 | `device.name2=` | 设备名称 2 |
+| `AK3_DEVICE_NAME3` | 空 | `device.name3=` | 设备名称 3 |
+| `AK3_DEVICE_NAME4` | 空 | `device.name4=` | 设备名称 4 |
+| `AK3_DEVICE_NAME5` | 空 | `device.name5=` | 设备名称 5 |
+| `AK3_BLOCK` | `auto` | `BLOCK=` | 刷写的分区（如 `boot`、`init_boot`、`auto`） |
+| `AK3_SLOT_DEVICE` | `1` | `IS_SLOT_DEVICE=` | A/B 插槽设备：`1` 开启、`0` 关闭、`auto` 自动判断 |
+| `AK3_PATCH_VBMETA` | `auto` | `PATCH_VBMETA_FLAG=` | 修补 vbmeta 关闭 AVB 验证：`1` 开启、`0` 关闭、`auto` 自动判断 |
+
+使用示例：
+
+```bash
+# 开启设备检测并设置设备名称
+AK3_DEVICE_CHECK=1 AK3_DEVICE_NAME1=miro AK3_DEVICE_NAME2=mipro ./build.sh zip
+
+# 刷写到 init_boot 分区（GKI 设备常用）
+AK3_BLOCK=init_boot ./build.sh zip
+
+# 关闭 A/B 插槽检测
+AK3_SLOT_DEVICE=0 ./build.sh zip
+
+# 强制修补 vbmeta 关闭 AVB 验证
+AK3_PATCH_VBMETA=1 ./build.sh zip
+
+# 自定义内核名称
+KERNEL_NAME="my-custom-kernel" ./build.sh zip
+```
+
 #### 加速编译技巧
 
 1. **安装 ccache**（推荐）：首次编译后，后续编译速度提升 3-5 倍

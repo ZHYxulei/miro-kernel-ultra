@@ -30,11 +30,22 @@
 #   CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
 #   GCC_PATH          Path to directory containing aarch64-linux-gnu-gcc (for CROSS_COMPILE)
 #   JOBS              Override number of parallel jobs (default: nproc)
-#   KERNEL_NAME       Override kernel name shown in AnyKernel3
+#   KERNEL_NAME       Override kernel name shown in AnyKernel3 (default: miro-kernel-ultra)
 #   OUT_DIR           Override output directory (default: out)
 #   USE_CCACHE        Set to 1 to enable ccache (default: auto-detect)
 #   CCACHE_DIR        Override ccache directory (default: ~/.ccache)
 #   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
+#
+# AnyKernel3 configuration (optional):
+#   AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 0)
+#   AK3_DEVICE_NAME1  Device name 1 (e.g. miro)
+#   AK3_DEVICE_NAME2  Device name 2
+#   AK3_DEVICE_NAME3  Device name 3
+#   AK3_DEVICE_NAME4  Device name 4
+#   AK3_DEVICE_NAME5  Device name 5
+#   AK3_BLOCK         Partition to flash (default: auto, e.g. boot, init_boot)
+#   AK3_SLOT_DEVICE   A/B slot device: 1, 0, or auto (default: 1)
+#   AK3_PATCH_VBMETA  Patch vbmeta to disable AVB: 1, 0, or auto (default: auto)
 #
 
 set -e
@@ -156,6 +167,17 @@ ANYKERNEL3_ZIP="miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip"
 
 # Kernel name shown in AnyKernel3 installer
 KERNEL_NAME="miro-kernel-ultra"
+
+# AnyKernel3 configuration (overridable via environment variables)
+AK3_DEVICE_CHECK="${AK3_DEVICE_CHECK:-0}"
+AK3_DEVICE_NAME1="${AK3_DEVICE_NAME1:-miro}"
+AK3_DEVICE_NAME2="${AK3_DEVICE_NAME2:-}"
+AK3_DEVICE_NAME3="${AK3_DEVICE_NAME3:-}"
+AK3_DEVICE_NAME4="${AK3_DEVICE_NAME4:-}"
+AK3_DEVICE_NAME5="${AK3_DEVICE_NAME5:-}"
+AK3_BLOCK="${AK3_BLOCK:-auto}"
+AK3_SLOT_DEVICE="${AK3_SLOT_DEVICE:-1}"
+AK3_PATCH_VBMETA="${AK3_PATCH_VBMETA:-auto}"
 
 # Error log file (set during build)
 ERROR_LOG=""
@@ -558,11 +580,21 @@ package_anykernel3() {
         sed -i \
             -e "s/^kernel.string=.*/kernel.string=${KERNEL_NAME}/" \
             -e "s/^do\.modules=.*/do.modules=1/" \
-            -e "s/^do\.devicecheck=.*/do.devicecheck=0/" \
-            -e "s/^BLOCK=.*/BLOCK=auto;/" \
-            -e "s/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=1;/" \
+            -e "s/^do\.devicecheck=.*/do.devicecheck=${AK3_DEVICE_CHECK}/" \
+            -e "s/^device\.name1=.*/device.name1=${AK3_DEVICE_NAME1}/" \
+            -e "s/^device\.name2=.*/device.name2=${AK3_DEVICE_NAME2}/" \
+            -e "s/^device\.name3=.*/device.name3=${AK3_DEVICE_NAME3}/" \
+            -e "s/^device\.name4=.*/device.name4=${AK3_DEVICE_NAME4}/" \
+            -e "s/^device\.name5=.*/device.name5=${AK3_DEVICE_NAME5}/" \
+            -e "s/^BLOCK=.*/BLOCK=${AK3_BLOCK};/" \
+            -e "s/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=${AK3_SLOT_DEVICE};/" \
+            -e "s/^PATCH_VBMETA_FLAG=.*/PATCH_VBMETA_FLAG=${AK3_PATCH_VBMETA};/" \
             "${ak3_sh}"
-        log "  Configured anykernel.sh"
+        log "  Configured anykernel.sh:"
+        log "    kernel.string=${KERNEL_NAME}"
+        log "    do.devicecheck=${AK3_DEVICE_CHECK}"
+        log "    device.name1=${AK3_DEVICE_NAME1}"
+        log "    block=${AK3_BLOCK}  slot_device=${AK3_SLOT_DEVICE}  patch_vbmeta=${AK3_PATCH_VBMETA}"
     fi
 
     # Create flashable zip
@@ -751,6 +783,17 @@ Environment variables:
   CCACHE_DIR        Override ccache directory (default: ~/.ccache)
   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
 
+AnyKernel3 configuration:
+  AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 0)
+  AK3_DEVICE_NAME1  Device name 1, e.g. miro (default: miro)
+  AK3_DEVICE_NAME2  Device name 2 (default: empty)
+  AK3_DEVICE_NAME3  Device name 3 (default: empty)
+  AK3_DEVICE_NAME4  Device name 4 (default: empty)
+  AK3_DEVICE_NAME5  Device name 5 (default: empty)
+  AK3_BLOCK         Partition to flash (default: auto, e.g. boot, init_boot)
+  AK3_SLOT_DEVICE   A/B slot device: 1, 0, or auto (default: 1)
+  AK3_PATCH_VBMETA  Patch vbmeta to disable AVB: 1, 0, or auto (default: auto)
+
 Tips for faster builds:
   1. Install ccache:  apt install ccache && ccache -M 50G
      - First build: normal speed. Subsequent builds: 3-5x faster.
@@ -778,6 +821,8 @@ Examples:
   CLANG_PATH=/opt/clang/bin bash build.sh zip          # Build with custom clang
   USE_CCACHE=0 bash build.sh all                       # Disable ccache
   FAST_BUILD=1 bash build.sh zip                        # Fast zip (no modules in zip)
+  AK3_DEVICE_CHECK=1 AK3_DEVICE_NAME1=miro bash build.sh zip  # Enable device check
+  AK3_BLOCK=init_boot bash build.sh zip                # Flash to init_boot partition
 
 Project: https://github.com/ZHYxulei/miro-kernel-ultra
 Issues:  https://github.com/ZHYxulei/miro-kernel-ultra/issues
