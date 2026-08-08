@@ -171,9 +171,9 @@ KERNEL_NAME="miro-kernel-ultra"
 # AnyKernel3 configuration (overridable via environment variables)
 AK3_DEVICE_CHECK="${AK3_DEVICE_CHECK:-1}"
 AK3_DEVICE_NAME1="${AK3_DEVICE_NAME1:-missi}"
-AK3_DEVICE_NAME2="${AK3_DEVICE_NAME2:-}"
-AK3_DEVICE_NAME3="${AK3_DEVICE_NAME3:-}"
-AK3_DEVICE_NAME4="${AK3_DEVICE_NAME4:-}"
+AK3_DEVICE_NAME2="${AK3_DEVICE_NAME2:-24122RKC7C}"
+AK3_DEVICE_NAME3="${AK3_DEVICE_NAME3:-miro}"
+AK3_DEVICE_NAME4="${AK3_DEVICE_NAME4:-Redmi K80 Pro}"
 AK3_DEVICE_NAME5="${AK3_DEVICE_NAME5:-}"
 AK3_BLOCK="${AK3_BLOCK:-boot}"
 AK3_SLOT_DEVICE="${AK3_SLOT_DEVICE:-1}"
@@ -786,9 +786,9 @@ Environment variables:
 AnyKernel3 configuration:
   AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 1)
   AK3_DEVICE_NAME1  Device name 1, e.g. missi (default: missi)
-  AK3_DEVICE_NAME2  Device name 2 (default: empty)
-  AK3_DEVICE_NAME3  Device name 3 (default: empty)
-  AK3_DEVICE_NAME4  Device name 4 (default: empty)
+  AK3_DEVICE_NAME2  Device name 2 (default: 24122RKC7C)
+  AK3_DEVICE_NAME3  Device name 3 (default: miro)
+  AK3_DEVICE_NAME4  Device name 4 (default: Redmi K80 Pro)
   AK3_DEVICE_NAME5  Device name 5 (default: empty)
   AK3_BLOCK         Partition to flash (default: boot, e.g. auto, init_boot)
   AK3_SLOT_DEVICE   A/B slot device: 1, 0, or auto (default: 1)
