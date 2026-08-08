@@ -514,6 +514,19 @@ update_submodules() {
     git submodule status
 }
 
+menuconfig() {
+    log "Launching menuconfig..."
+    if [ ! -f "${OUT_DIR}/.config" ]; then
+        log "No .config found, generating defconfig first..."
+        check_prerequisites
+        init_submodules
+        clean_source_tree
+        make_defconfig
+    fi
+    make "${MAKE_ARGS[@]}" menuconfig
+    log "Configuration saved to ${OUT_DIR}/.config"
+}
+
 show_help() {
     cat << 'EOF'
 build.sh - Build script for miro-kernel-ultra
@@ -523,6 +536,7 @@ Usage: bash build.sh <command>
 Commands:
   help        Show this help message
   defconfig   Generate .config (merge gki_defconfig + vendor fragments)
+  menuconfig  Open kernel menuconfig UI to edit .config interactively
   kernel      Build kernel (defconfig + Image + modules + dtbs)
   fast        Build kernel fast (defconfig + Image + dtbs only, no modules)
   all         Build kernel, install modules, and copy outputs to out/dist
@@ -588,6 +602,9 @@ main() {
             init_submodules
             clean_source_tree
             make_defconfig
+            ;;
+        menuconfig)
+            menuconfig
             ;;
         kernel)
             check_prerequisites
