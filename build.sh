@@ -306,7 +306,10 @@ setup_kpatch_toolchain() {
     fi
 
     # Auto-download Arm GNU 12.2 toolchain (matches KPatch-Next upstream CI)
-    local tc_prefix="${KPATCH_TOOLCHAIN_DIR}/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf"
+    # Must use absolute path — make runs inside KPatch-Next/kernel/
+    local tc_dir
+    tc_dir="$(mkdir -p "${KPATCH_TOOLCHAIN_DIR}" && cd "${KPATCH_TOOLCHAIN_DIR}" && pwd)"
+    local tc_prefix="${tc_dir}/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf"
     local tc_gcc="${tc_prefix}/bin/aarch64-none-elf-gcc"
     if [ -x "${tc_gcc}" ]; then
         KPATCH_TARGET_COMPILE="${tc_prefix}/bin/aarch64-none-elf-"
@@ -316,8 +319,7 @@ setup_kpatch_toolchain() {
     fi
 
     log "Downloading Arm GNU 12.2 toolchain for KPatch-Next..."
-    mkdir -p "${KPATCH_TOOLCHAIN_DIR}"
-    local archive="${KPATCH_TOOLCHAIN_DIR}/arm-gnu-toolchain.tar.xz"
+    local archive="${tc_dir}/arm-gnu-toolchain.tar.xz"
     if [ ! -f "${archive}" ]; then
         curl -fL -o "${archive}" "${KPATCH_TOOLCHAIN_URL}" || {
             error "Failed to download Arm GNU toolchain."
@@ -325,7 +327,7 @@ setup_kpatch_toolchain() {
             exit 1
         }
     fi
-    tar -Jxf "${archive}" -C "${KPATCH_TOOLCHAIN_DIR}"
+    tar -Jxf "${archive}" -C "${tc_dir}"
     if [ ! -x "${tc_gcc}" ]; then
         error "Toolchain extraction completed but gcc not found at ${tc_gcc}"
         exit 1
