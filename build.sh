@@ -511,10 +511,15 @@ install_modules() {
 }
 
 setup_anykernel3() {
-    if [ -d "${ANYKERNEL3_DIR}/.git" ]; then
+    if git -C "${ANYKERNEL3_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         log "AnyKernel3 submodule found, using existing."
+    elif [ -d "${ANYKERNEL3_DIR}" ] && [ -n "$(find "${ANYKERNEL3_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        error "${ANYKERNEL3_DIR} exists but is not an initialized Git repository."
+        error "Run: git submodule update --init --recursive AnyKernel3"
+        exit 1
     elif [ -n "${ANYKERNEL3_REPO}" ]; then
         log "AnyKernel3 not initialized, cloning..."
+        rm -rf "${ANYKERNEL3_DIR}"
         git clone --depth=1 "${ANYKERNEL3_REPO}" "${ANYKERNEL3_DIR}"
     else
         error "AnyKernel3 not found. Run: git submodule update --init AnyKernel3"
