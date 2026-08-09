@@ -604,10 +604,11 @@ build_kpatch_tools() {
     make -C "${KPATCH_NEXT_DIR}/tools" clean
     make -C "${KPATCH_NEXT_DIR}/kernel" TARGET_COMPILE="${KPATCH_TARGET_COMPILE}" hdr kpimg
     # EXP fork's tools/Makefile references sha256.o but omits the source;
-    # copy it from kernel/base/ before building kptools.
+    # copy it from kernel/base/ and fix the ktypes.h include for userspace.
     if [ ! -f "${KPATCH_NEXT_DIR}/tools/sha256.c" ] && [ -f "${KPATCH_NEXT_DIR}/kernel/base/sha256.c" ]; then
         cp -f "${KPATCH_NEXT_DIR}/kernel/base/sha256.c" "${KPATCH_NEXT_DIR}/tools/sha256.c"
-        cp -f "${KPATCH_NEXT_DIR}/kernel/include/sha256.h" "${KPATCH_NEXT_DIR}/tools/sha256.h"
+        sed 's/<ktypes.h>/<stdint.h>/' "${KPATCH_NEXT_DIR}/kernel/include/sha256.h" \
+            > "${KPATCH_NEXT_DIR}/tools/sha256.h"
         log "  Copied sha256 source to tools/ (EXP fork workaround)"
     fi
     make -C "${KPATCH_NEXT_DIR}/tools"
