@@ -162,11 +162,11 @@ KERNEL_DTBO=${OUT_DIR}/arch/${ARCH}/boot/dtbo.img
 
 # AnyKernel3 packaging
 ANYKERNEL3_DIR="AnyKernel3"
-ANYKERNEL3_REPO="https://github.com/osm0sis/AnyKernel3.git"
-ANYKERNEL3_ZIP="miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip"
+ANYKERNEL3_REPO="https://github.com/ZHYxulei/AnyKernel3.git"
+ANYKERNEL3_ZIP="${ANYKERNEL3_ZIP:-miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip}"
 
 # Kernel name shown in AnyKernel3 installer
-KERNEL_NAME="miro-kernel-ultra"
+KERNEL_NAME="${KERNEL_NAME:-miro-kernel-ultra}"
 
 # AnyKernel3 configuration (overridable via environment variables)
 AK3_DEVICE_CHECK="${AK3_DEVICE_CHECK:-1}"
