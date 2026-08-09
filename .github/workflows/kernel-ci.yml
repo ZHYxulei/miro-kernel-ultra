@@ -39,7 +39,7 @@ jobs:
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             flex bison bc cpio zip unzip git ccache \
             device-tree-compiler kmod dwarves \
-            libelf-dev libssl-dev libncurses-dev \
+            libelf-dev libssl-dev libncurses-dev zlib1g-dev \
             perl python3 rsync xz-utils zstd
 
       - uses: actions/cache@v4
@@ -50,16 +50,27 @@ jobs:
             ccache-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/gki_defconfig', 'arch/arm64/configs/vendor/*.config', 'arch/arm64/configs/droidspaces.fragment') }}-
             ccache-${{ runner.os }}-
 
+      - name: Cache KPatch toolchain
+        uses: actions/cache@v4
+        with:
+          path: out/kpatch-toolchain
+          key: kpatch-toolchain-12.2.rel1
+
       - name: Build kernel
         env:
           ANYKERNEL3_ZIP: miro-kernel-ultra-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
+          ANYKERNEL3_KPATCH_ZIP: miro-kernel-ultra-kpatch-exp-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
         run: |
           chmod +x build.sh scripts/ci/verify-artifacts.sh
-          JOBS="$(nproc)" bash build.sh zip
+          JOBS="$(nproc)" bash build.sh zip-dual
 
       - name: Verify artifacts
+        env:
+          STANDARD_ZIP: out/dist/miro-kernel-ultra-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
+          KPATCH_ZIP: out/dist/miro-kernel-ultra-kpatch-exp-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
         run: |
-          scripts/ci/verify-artifacts.sh out/dist
+          scripts/ci/verify-artifacts.sh "${STANDARD_ZIP}" standard
+          scripts/ci/verify-artifacts.sh "${KPATCH_ZIP}" kpatch-exp
           cd out/dist
           sha256sum *.zip > SHA256SUMS
 
@@ -71,6 +82,7 @@ jobs:
             out/dist/*.zip
             out/dist/SHA256SUMS
             out/dist/Image
+            out/dist/Image-kpatch-next-exp
             out/dist/.config
             out/dist/System.map
             out/dist/vmlinux.symvers
@@ -111,5 +123,5 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" release-assets/*.zip release-assets/SHA256SUMS \
               --repo "${GITHUB_REPOSITORY}" \
               --title "miro-kernel-ultra ${GITHUB_REF_NAME}" \
-              --notes "Redmi K80 Pro（24122RKC7C / miro）内核自动构建版本。集成 ReSukiSU、SUSFS，并通过 AnyKernel3 刷入 A/B 设备的 boot 分区。"
+              --notes "Redmi K80 Pro（24122RKC7C / miro）双版本内核。标准版集成 ReSukiSU 与 SUSFS；kpatch-exp 版额外嵌入 KPatch-Next KPM 运行时。KPatch 版本属于实验构建，刷入前请备份 boot，启动与 KPM 兼容性需要实机验证。"
           fi

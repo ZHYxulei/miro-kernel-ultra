@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-dist_dir="${1:-out/dist}"
+zip_file="${1:-}"
+variant="${2:-standard}"
+dist_dir="$(dirname "${zip_file:-out/dist/package.zip}")"
+kpatch_tools="${KPATCH_TOOLS:-KPatch-Next/tools/kptools}"
 
 fail() {
     printf 'Artifact verification failed: %s\n' "$*" >&2
@@ -18,12 +21,10 @@ require_config() {
     grep -Fxq -- "${setting}" <<< "${anykernel_config}" || fail "anykernel.sh is missing ${setting}"
 }
 
+[ -n "${zip_file}" ] || fail "usage: $0 <zip-file> <standard|kpatch-exp>"
+[ "${variant}" = standard ] || [ "${variant}" = kpatch-exp ] || fail "unknown variant: ${variant}"
+[ -s "${zip_file}" ] || fail "${zip_file} is missing or empty"
 [ -s "${dist_dir}/Image" ] || fail "${dist_dir}/Image is missing or empty"
-
-mapfile -t zip_files < <(find "${dist_dir}" -maxdepth 1 -type f -name '*.zip' -print | sort)
-[ "${#zip_files[@]}" -eq 1 ] || fail "expected exactly one ZIP in ${dist_dir}, found ${#zip_files[@]}"
-
-zip_file="${zip_files[0]}"
 unzip -tq "${zip_file}" || fail "ZIP integrity check failed: ${zip_file}"
 
 mapfile -t entries < <(unzip -Z1 "${zip_file}")
@@ -41,9 +42,26 @@ require_config 'device.name3=Redmi K80 Pro'
 require_config 'BLOCK=boot;'
 require_config 'IS_SLOT_DEVICE=1;'
 
+zip_image="$(mktemp)"
+trap 'rm -f "${zip_image}"' EXIT
+unzip -p "${zip_file}" Image > "${zip_image}"
+if [ "${variant}" = standard ]; then
+    cmp -s "${zip_image}" "${dist_dir}/Image" || fail "standard ZIP Image differs from ${dist_dir}/Image"
+    grep -Fq 'KPatch-Next EXP' <<< "${anykernel_config}" && fail "standard ZIP contains KPatch-Next label"
+else
+    [ -s "${dist_dir}/Image-kpatch-next-exp" ] || fail "KPatch-Next Image is missing or empty"
+    cmp -s "${zip_image}" "${dist_dir}/Image-kpatch-next-exp" || fail "KPatch ZIP Image differs from patched Image"
+    cmp -s "${zip_image}" "${dist_dir}/Image" && fail "KPatch Image is identical to standard Image"
+    require_config 'kernel.string=miro-kernel-ultra KPatch-Next EXP'
+    [ -x "${kpatch_tools}" ] || fail "kptools is missing: ${kpatch_tools}"
+    patch_info="$("${kpatch_tools}" -l -i "${zip_image}")"
+    grep -Fxq 'patched=true' <<< "${patch_info}" || fail "KPatch Image is not recognized as patched"
+    printf '%s\n' "${patch_info}" | grep -E '^(version|compile_time|arch)=' || true
+fi
+
 module_file="$(find "${dist_dir}/modules" -type f -name '*.ko' -print -quit 2>/dev/null || true)"
 if [ -n "${module_file}" ]; then
     grep -Eq '^modules/.+\.ko$' <<< "${entries_text}" || fail "ZIP is missing kernel modules"
 fi
 
-echo "Verified ${zip_file}"
+echo "Verified ${variant}: ${zip_file}"

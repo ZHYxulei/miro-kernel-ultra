@@ -19,6 +19,8 @@
 #   bash build.sh kernel        Build kernel (Image + modules + dtbs)
 #   bash build.sh all           Build kernel and copy outputs to out/dist
 #   bash build.sh zip           Build kernel and package AnyKernel3 flashable zip
+#   bash build.sh kpatch        Patch an existing kernel Image with KPatch-Next EXP
+#   bash build.sh zip-dual      Build standard and KPatch-Next EXP flashable zips
 #   bash build.sh clean         Clean build directory (preserves .config)
 #   bash build.sh deepclean     Deep clean: out/ + AnyKernel3/ + submodule artifacts
 #   bash build.sh mrproper      Full source tree clean (make mrproper + deepclean)
@@ -35,6 +37,7 @@
 #   USE_CCACHE        Set to 1 to enable ccache (default: auto-detect)
 #   CCACHE_DIR        Override ccache directory (default: ~/.ccache)
 #   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
+#   KPATCH_TARGET_COMPILE  KPatch ARM64 bare-metal toolchain prefix (auto-download if unset)
 #
 # AnyKernel3 configuration (optional):
 #   AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 1)
@@ -164,6 +167,18 @@ KERNEL_DTBO=${OUT_DIR}/arch/${ARCH}/boot/dtbo.img
 ANYKERNEL3_DIR="AnyKernel3"
 ANYKERNEL3_REPO="https://github.com/ZHYxulei/AnyKernel3.git"
 ANYKERNEL3_ZIP="${ANYKERNEL3_ZIP:-miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip}"
+ANYKERNEL3_KPATCH_ZIP="${ANYKERNEL3_KPATCH_ZIP:-miro-kernel-ultra-kpatch-exp-$(date +%Y%m%d-%H%M).zip}"
+
+KPATCH_NEXT_DIR="KPatch-Next"
+KPATCH_KPIMG="${KPATCH_NEXT_DIR}/kernel/kpimg"
+KPATCH_TOOLS="${KPATCH_NEXT_DIR}/tools/kptools"
+KPATCHED_IMAGE="${DIST_DIR}/Image-kpatch-next-exp"
+# KPatch-Next kpimg requires the bare-metal aarch64-none-elf- toolchain
+# (aarch64-linux-gnu- produces GOT/PLT entries that fail the linker script).
+# If empty, setup_kpatch_toolchain() auto-downloads Arm GNU 12.2.
+KPATCH_TARGET_COMPILE="${KPATCH_TARGET_COMPILE:-}"
+KPATCH_TOOLCHAIN_DIR="${KPATCH_TOOLCHAIN_DIR:-${OUT_DIR}/kpatch-toolchain}"
+KPATCH_TOOLCHAIN_URL="https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf.tar.xz"
 
 # Kernel name shown in AnyKernel3 installer
 KERNEL_NAME="${KERNEL_NAME:-miro-kernel-ultra}"
@@ -274,6 +289,70 @@ check_prerequisites() {
     log "Clang version: $(clang --version | head -1)"
 }
 
+setup_kpatch_toolchain() {
+    # If KPATCH_TARGET_COMPILE is already set and works, use it
+    if [ -n "${KPATCH_TARGET_COMPILE}" ]; then
+        if command -v "${KPATCH_TARGET_COMPILE}gcc" >/dev/null 2>&1; then
+            return
+        fi
+        error "KPATCH_TARGET_COMPILE is set but ${KPATCH_TARGET_COMPILE}gcc not found."
+        exit 1
+    fi
+
+    # Check if aarch64-none-elf-gcc is already on PATH
+    if command -v aarch64-none-elf-gcc >/dev/null 2>&1; then
+        KPATCH_TARGET_COMPILE="aarch64-none-elf-"
+        return
+    fi
+
+    # Auto-download Arm GNU 12.2 toolchain (matches KPatch-Next upstream CI)
+    local tc_prefix="${KPATCH_TOOLCHAIN_DIR}/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf"
+    local tc_gcc="${tc_prefix}/bin/aarch64-none-elf-gcc"
+    if [ -x "${tc_gcc}" ]; then
+        KPATCH_TARGET_COMPILE="${tc_prefix}/bin/aarch64-none-elf-"
+        export PATH="${tc_prefix}/bin:${PATH}"
+        log "Using cached Arm GNU toolchain for KPatch-Next"
+        return
+    fi
+
+    log "Downloading Arm GNU 12.2 toolchain for KPatch-Next..."
+    mkdir -p "${KPATCH_TOOLCHAIN_DIR}"
+    local archive="${KPATCH_TOOLCHAIN_DIR}/arm-gnu-toolchain.tar.xz"
+    if [ ! -f "${archive}" ]; then
+        curl -fL -o "${archive}" "${KPATCH_TOOLCHAIN_URL}" || {
+            error "Failed to download Arm GNU toolchain."
+            error "Set KPATCH_TARGET_COMPILE to a working aarch64-none-elf- prefix."
+            exit 1
+        }
+    fi
+    tar -Jxf "${archive}" -C "${KPATCH_TOOLCHAIN_DIR}"
+    if [ ! -x "${tc_gcc}" ]; then
+        error "Toolchain extraction completed but gcc not found at ${tc_gcc}"
+        exit 1
+    fi
+    KPATCH_TARGET_COMPILE="${tc_prefix}/bin/aarch64-none-elf-"
+    export PATH="${tc_prefix}/bin:${PATH}"
+    log "Arm GNU toolchain ready: ${KPATCH_TARGET_COMPILE}"
+}
+
+check_kpatch_prerequisites() {
+    setup_kpatch_toolchain
+    local missing=()
+    local tool
+    for tool in "${KPATCH_TARGET_COMPILE}gcc" "${KPATCH_TARGET_COMPILE}ld" "${KPATCH_TARGET_COMPILE}objcopy" cc make; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        error "Missing KPatch-Next tools: ${missing[*]}"
+        error "Set KPATCH_TARGET_COMPILE to a working aarch64-none-elf- toolchain prefix."
+        exit 1
+    fi
+    if ! echo '#include <zlib.h>' | cc -E - >/dev/null 2>&1; then
+        error "Missing zlib development headers. Install zlib1g-dev or equivalent."
+        exit 1
+    fi
+}
+
 install_deps() {
     log "Installing build dependencies..."
 
@@ -285,7 +364,7 @@ install_deps() {
         log "Detected: apt (Debian/Ubuntu)"
         sudo apt update
         sudo apt install -y $common_pkgs \
-            device-tree-compiler libelf-dev libssl-dev libncurses-dev
+            device-tree-compiler libelf-dev libssl-dev libncurses-dev zlib1g-dev
     elif command -v dnf >/dev/null 2>&1; then
         # Fedora/RHEL
         log "Detected: dnf (Fedora/RHEL)"
@@ -322,6 +401,7 @@ show_toolchain() {
     echo "  CROSS_COMPILE_COMPAT: ${CROSS_COMPILE_COMPAT}"
     echo "  OUT_DIR:              ${OUT_DIR}"
     echo "  JOBS:                 ${JOBS}"
+    echo "  KPATCH_TARGET_COMPILE:${KPATCH_TARGET_COMPILE:-(auto: aarch64-none-elf-)}"
     echo ""
     if [ -n "${CLANG_PATH}" ]; then
         echo "  CLANG_PATH (custom):  ${CLANG_PATH}"
@@ -510,6 +590,42 @@ install_modules() {
     rm -f "${OUT_DIR}/modules_install/lib/modules/"*/source
 }
 
+build_kpatch_tools() {
+    check_kpatch_prerequisites
+    if ! git -C "${KPATCH_NEXT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        error "KPatch-Next submodule is not initialized."
+        error "Run: git submodule update --init --recursive KPatch-Next"
+        exit 1
+    fi
+    log "Building KPatch-Next EXP tools..."
+    make -C "${KPATCH_NEXT_DIR}/kernel" clean
+    make -C "${KPATCH_NEXT_DIR}/tools" clean
+    make -C "${KPATCH_NEXT_DIR}/kernel" TARGET_COMPILE="${KPATCH_TARGET_COMPILE}" hdr kpimg
+    make -C "${KPATCH_NEXT_DIR}/tools"
+    [ -s "${KPATCH_KPIMG}" ] || { error "KPatch kpimg was not generated."; exit 1; }
+    [ -x "${KPATCH_TOOLS}" ] || { error "KPatch kptools was not generated."; exit 1; }
+    log "KPatch-Next version: $("${KPATCH_TOOLS}" -v -k "${KPATCH_KPIMG}")"
+}
+
+patch_kernel_image() {
+    [ -s "${KERNEL_IMAGE}" ] || { error "Kernel Image not found at ${KERNEL_IMAGE}"; exit 1; }
+    if ! grep -Eq '^CONFIG_KALLSYMS(=y|_ALL=y)$' "${OUT_DIR}/.config"; then
+        error "KPatch-Next requires CONFIG_KALLSYMS=y."
+        exit 1
+    fi
+    build_kpatch_tools
+    mkdir -p "${DIST_DIR}"
+    rm -f "${KPATCHED_IMAGE}"
+    log "Patching kernel Image with KPatch-Next EXP..."
+    "${KPATCH_TOOLS}" -p -i "${KERNEL_IMAGE}" -k "${KPATCH_KPIMG}" -o "${KPATCHED_IMAGE}"
+    local patch_info
+    patch_info="$("${KPATCH_TOOLS}" -l -i "${KPATCHED_IMAGE}")"
+    printf '%s\n' "${patch_info}"
+    grep -Fxq 'patched=true' <<< "${patch_info}" || { error "KPatch-Next failed to mark the Image as patched."; exit 1; }
+    cmp -s "${KERNEL_IMAGE}" "${KPATCHED_IMAGE}" && { error "KPatch-Next output is identical to the original Image."; exit 1; }
+    log "KPatch-Next EXP Image created: ${KPATCHED_IMAGE}"
+}
+
 setup_anykernel3() {
     if git -C "${ANYKERNEL3_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         log "AnyKernel3 submodule found, using existing."
@@ -543,6 +659,9 @@ AK3GITIGNORE
 }
 
 package_anykernel3() {
+    local image_path="${1:-${KERNEL_IMAGE}}"
+    local zip_name="${2:-${ANYKERNEL3_ZIP}}"
+    local package_kernel_name="${3:-${KERNEL_NAME}}"
     log "Packaging AnyKernel3 flashable zip..."
 
     setup_anykernel3
@@ -552,10 +671,10 @@ package_anykernel3() {
     rm -rf "${ANYKERNEL3_DIR}/modules"
 
     # Copy kernel outputs
-    if [ -f "${KERNEL_IMAGE}" ]; then
-        cp "${KERNEL_IMAGE}" "${ANYKERNEL3_DIR}/"
+    if [ -f "${image_path}" ]; then
+        cp "${image_path}" "${ANYKERNEL3_DIR}/Image"
     else
-        error "Kernel Image not found at ${KERNEL_IMAGE}"
+        error "Kernel Image not found at ${image_path}"
         exit 1
     fi
 
@@ -583,7 +702,7 @@ package_anykernel3() {
     local ak3_sh="${ANYKERNEL3_DIR}/anykernel.sh"
     if [ -f "${ak3_sh}" ]; then
         sed -i \
-            -e "s/^kernel.string=.*/kernel.string=${KERNEL_NAME}/" \
+            -e "s/^kernel.string=.*/kernel.string=${package_kernel_name}/" \
             -e "s/^do\.modules=.*/do.modules=1/" \
             -e "s/^do\.devicecheck=.*/do.devicecheck=${AK3_DEVICE_CHECK}/" \
             -e "s/^device\.name1=.*/device.name1=${AK3_DEVICE_NAME1}/" \
@@ -596,18 +715,23 @@ package_anykernel3() {
             -e "s/^PATCH_VBMETA_FLAG=.*/PATCH_VBMETA_FLAG=${AK3_PATCH_VBMETA};/" \
             "${ak3_sh}"
         log "  Configured anykernel.sh:"
-        log "    kernel.string=${KERNEL_NAME}"
+        log "    kernel.string=${package_kernel_name}"
         log "    do.devicecheck=${AK3_DEVICE_CHECK}"
         log "    device.name1=${AK3_DEVICE_NAME1}"
         log "    block=${AK3_BLOCK}  slot_device=${AK3_SLOT_DEVICE}  patch_vbmeta=${AK3_PATCH_VBMETA}"
     fi
 
     # Create flashable zip
-    local zip_path="${DIST_DIR}/${ANYKERNEL3_ZIP}"
+    local zip_path="${DIST_DIR}/${zip_name}"
     mkdir -p "${DIST_DIR}"
     rm -f "${zip_path}"
     ( cd "${ANYKERNEL3_DIR}" && zip -r9 "${SCRIPT_DIR}/${zip_path}" . -x ".git" ".git/*" "README.md" ".gitignore" )
     log "AnyKernel3 zip created: ${zip_path}"
+}
+
+package_dual_anykernel3() {
+    package_anykernel3 "${KERNEL_IMAGE}" "${ANYKERNEL3_ZIP}" "${KERNEL_NAME}"
+    package_anykernel3 "${KPATCHED_IMAGE}" "${ANYKERNEL3_KPATCH_ZIP}" "${KERNEL_NAME} KPatch-Next EXP"
 }
 
 clean() {
@@ -650,6 +774,12 @@ deepclean() {
         log "  Cleaned KernelSU submodule artifacts"
     fi
 
+    if [ -d "${KPATCH_NEXT_DIR}/kernel" ]; then
+        make -C "${KPATCH_NEXT_DIR}/kernel" clean >/dev/null 2>&1 || true
+        make -C "${KPATCH_NEXT_DIR}/tools" clean >/dev/null 2>&1 || true
+        log "  Cleaned KPatch-Next artifacts"
+    fi
+
     # Remove stray build artifacts in source tree (not tracked by make clean)
     find . -maxdepth 1 -name '*.o' -delete 2>/dev/null || true
     find . -maxdepth 1 -name '*.a' -delete 2>/dev/null || true
@@ -678,6 +808,12 @@ mrproper() {
         log "  Cleaned KernelSU submodule artifacts"
     fi
 
+    if [ -d "${KPATCH_NEXT_DIR}/kernel" ]; then
+        make -C "${KPATCH_NEXT_DIR}/kernel" clean >/dev/null 2>&1 || true
+        make -C "${KPATCH_NEXT_DIR}/tools" clean >/dev/null 2>&1 || true
+        log "  Cleaned KPatch-Next artifacts"
+    fi
+
     # Remove stale config files from source root
     rm -f .config .config.old .tmp_defconfig
 
@@ -691,7 +827,7 @@ update_submodules() {
     git submodule foreach 'git fetch origin && git checkout origin/HEAD && echo "Updated: $(basename $(pwd)) -> $(git log --oneline -1)"'
 
     # Stage the updated submodule pointers
-    git add KernelSU AnyKernel3
+    git add KernelSU AnyKernel3 KPatch-Next
     log "Submodule pointers staged. Run 'git commit' to save changes."
     log ""
     log "Submodule status:"
@@ -770,6 +906,8 @@ Commands:
   fast        Build kernel fast (defconfig + Image + dtbs only, no modules)
   all         Build kernel, install modules, and copy outputs to out/dist
   zip         Build kernel and package AnyKernel3 flashable zip
+  kpatch      Patch an existing kernel Image with KPatch-Next EXP
+  zip-dual    Build standard and KPatch-Next EXP flashable zips
   package     Package AnyKernel3 zip from existing out/dist outputs
   modules     Install kernel modules (run after 'kernel')
   toolchain   Show current toolchain configuration
@@ -777,7 +915,7 @@ Commands:
   clean       Clean build directory (preserves .config)
   deepclean   Deep clean: out/ + AnyKernel3/ + KernelSU artifacts + stale files
   mrproper    Full source tree clean (make mrproper + deepclean)
-  update-submodules  Update KernelSU and AnyKernel3 to latest upstream
+  update-submodules  Update KernelSU, AnyKernel3, and KPatch-Next
 
 Environment variables:
   CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
@@ -788,6 +926,8 @@ Environment variables:
   USE_CCACHE        Set to 1 to enable ccache (default: auto-detect)
   CCACHE_DIR        Override ccache directory (default: ~/.ccache)
   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
+  KPATCH_TARGET_COMPILE  KPatch ARM64 bare-metal toolchain prefix (auto-download aarch64-none-elf- if unset)
+  ANYKERNEL3_KPATCH_ZIP  Override KPatch-Next EXP zip filename
 
 AnyKernel3 configuration:
   AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 1)
@@ -813,6 +953,8 @@ Examples:
   bash build.sh quick                                  # One-command: update+menuconfig+build+package
   bash build.sh install-deps                           # Install build dependencies
   bash build.sh zip                                    # Full build + flashable zip
+  bash build.sh zip-dual                               # Build standard + KPatch EXP zips
+  bash build.sh kpatch                                 # Patch an existing kernel Image
   bash build.sh all                                    # Full build without packaging
   bash build.sh fast                                   # Quick build (no modules)
   bash build.sh kernel                                 # Just build kernel
@@ -894,6 +1036,22 @@ main() {
             install_modules
             copy_outputs
             package_anykernel3
+            log "Total time: $(elapsed)"
+            ;;
+        kpatch)
+            init_submodules
+            patch_kernel_image
+            ;;
+        zip-dual)
+            check_prerequisites
+            init_submodules
+            clean_source_tree
+            make_defconfig
+            build_kernel
+            install_modules
+            copy_outputs
+            patch_kernel_image
+            package_dual_anykernel3
             log "Total time: $(elapsed)"
             ;;
         package)

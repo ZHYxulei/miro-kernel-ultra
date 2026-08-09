@@ -24,6 +24,7 @@
 | DroidSpaces 配置片段 | 已接入构建配置 |
 | SUSFS | 已接入 |
 | ReSukiSU/KernelSU | 已接入（子模块） |
+| KPatch-Next KPM 运行时 | 实验支持（静态修补 Image，双版本构建） |
 | AnyKernel3 刷机包打包 | 已支持（子模块） |
 | 稳定性、性能和功耗优化 | 持续进行 |
 
@@ -76,7 +77,7 @@ git clone --recursive git@github.com:ZHYxulei/miro-kernel-ultra.git
 > 在没有 SSH 密钥的环境下，也可使用 HTTPS 作为备选：
 > `git clone --recursive https://github.com/ZHYxulei/miro-kernel-ultra.git`
 
-`--recursive` 会在克隆时自动初始化并拉取 `KernelSU` 和 `AnyKernel3` 子模块。
+`--recursive` 会在克隆时自动初始化并拉取 `KernelSU`、`AnyKernel3` 和 `KPatch-Next` 子模块。
 
 如果已经克隆但未带 `--recursive`，需要手动初始化子模块：
 
@@ -92,6 +93,7 @@ git submodule status
 # 预期输出：
 #  058cdc931016cb2cb769ed063cce6d65d6df61e0 KernelSU (v4.1.0-1338-g058cdc93)
 #  <hash> AnyKernel3 (...)
+#  f873890e9b25e71d15ede71ea3d83584fb258b10 KPatch-Next (0.13.10)
 ```
 
 确认驱动符号链接已就绪：
@@ -326,6 +328,7 @@ defconfig 片段：
 | `USE_CCACHE` | 自动检测 | 设为 `1` 启用 ccache，`0` 禁用 |
 | `CCACHE_DIR` | `~/.ccache` | ccache 缓存目录 |
 | `FAST_BUILD` | 未设置 | 设为 `1` 跳过模块编译，仅编译 Image + dtbs |
+| `KPATCH_TARGET_COMPILE` | 自动下载 | KPatch-Next `kpimg` 使用的 ARM64 bare-metal 工具链前缀（默认自动下载 Arm GNU 12.2 `aarch64-none-elf-`） |
 
 使用示例：
 
@@ -345,6 +348,29 @@ FAST_BUILD=1 ./build.sh zip
 # 将输出目录放在 tmpfs 加速编译
 OUT_DIR=/tmp/kernel-build ./build.sh zip
 ```
+
+#### KPatch-Next EXP 双版本构建
+
+KPatch-Next 不作为普通 Kconfig 驱动编入内核，而是在内核编译完成后使用 `kptools` 将 `kpimg` 静态嵌入 ARM64 `Image`。ReSukiSU 和 SUSFS 仍负责 root 与隐藏功能，KPatch-Next 仅提供 KPM 和动态内核补丁运行时。
+
+```bash
+# 编译一次内核，同时生成标准版与 KPatch 实验版刷机包
+./build.sh zip-dual
+
+# 对已经存在的 out/arch/arm64/boot/Image 执行 KPatch 修补
+./build.sh kpatch
+
+# 使用自定义 ARM64 bare-metal 工具链前缀构建 kpimg
+KPATCH_TARGET_COMPILE=/opt/gcc/bin/aarch64-none-elf- ./build.sh zip-dual
+```
+
+输出包括：
+
+- `miro-kernel-ultra-*.zip`：标准 ReSukiSU + SUSFS 版本。
+- `miro-kernel-ultra-kpatch-exp-*.zip`：额外嵌入 KPatch-Next KPM 运行时的实验版本。
+- `out/dist/Image-kpatch-next-exp`：经过 KPatch-Next 静态修补的内核 Image。
+
+> KPatch 实验版静态校验成功不代表设备一定可以启动。KPM 对核心函数的 Hook 可能与 ReSukiSU/SUSFS 冲突。首次刷入前必须备份可恢复的 boot 镜像，并确保能够通过 fastboot 回刷标准版。
 
 #### AnyKernel3 配置
 
@@ -411,7 +437,7 @@ A: 脚本会自动清理源码树中的 `.config` 等残留文件。如果仍然
 
 **Q: 编译报错 "Missing tools: ..."**
 
-A: 安装缺失的依赖：`apt install clang lld llvm flex bison bc cpio device-tree-compiler libelf-dev libssl-dev libncurses-dev zip`
+A: 安装缺失的依赖：`apt install clang lld llvm flex bison bc cpio device-tree-compiler libelf-dev libssl-dev libncurses-dev zlib1g-dev zip`。KPatch-Next 的 ARM64 bare-metal 工具链会在首次构建时自动下载。
 
 **Q: 编译报错找不到 `drivers/kernelsu` 符号链接**
 
@@ -568,6 +594,7 @@ SUSFS 补丁源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
 - [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) — 内核级 root 管理和模块扩展框架
 - [SUSFS (susfs4ksu)](https://gitlab.com/simonpunk/susfs4ksu) — 内核级 root 隐藏和文件系统隔离补丁
 - [DroidSpaces](https://github.com/ravindu644/Droidspaces-OSS) — Android/Linux 容器化用户空间支持
+- [KPatch-Next-EXP](https://github.com/741afb7/KPatch-Next-EXP) — ARM64 内核静态修补、KPM 和动态内核补丁运行时
 - [AnyKernel3](https://github.com/osm0sis/AnyKernel3) — Android 内核刷机包打包工具
 - [Linux Kernel](https://www.kernel.org/) — Android Common Kernel `android15-6.6`
 
@@ -581,5 +608,6 @@ SUSFS 补丁源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
 - **Linux 内核**：GPL-2.0 WITH Linux-syscall-note
 - **ReSukiSU/KernelSU**：GPL-2.0（子模块 `KernelSU/`）
 - **SUSFS (susfs4ksu)**：GPL-2.0（内核补丁部分）
+- **KPatch-Next-EXP**：GPL-2.0（子模块 `KPatch-Next/`）
 
 使用、修改和分发本项目代码须遵守上述许可证条款。
