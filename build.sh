@@ -605,7 +605,8 @@ package_anykernel3() {
     # Create flashable zip
     local zip_path="${DIST_DIR}/${ANYKERNEL3_ZIP}"
     mkdir -p "${DIST_DIR}"
-    ( cd "${ANYKERNEL3_DIR}" && zip -r9 "${SCRIPT_DIR}/${zip_path}" . -x ".git/*" "README.md" ".gitignore" )
+    rm -f "${zip_path}"
+    ( cd "${ANYKERNEL3_DIR}" && zip -r9 "${SCRIPT_DIR}/${zip_path}" . -x ".git" ".git/*" "README.md" ".gitignore" )
     log "AnyKernel3 zip created: ${zip_path}"
 }
 
