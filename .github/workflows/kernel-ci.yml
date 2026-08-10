@@ -16,7 +16,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 120
     permissions:
       contents: read
     env:
@@ -74,30 +74,43 @@ jobs:
           cd out/dist
           sha256sum *.zip > SHA256SUMS
 
+      - name: Stage artifacts
+        run: |
+          rm -rf ci-artifacts
+          mkdir -p ci-artifacts
+          cp -f out/dist/*.zip out/dist/SHA256SUMS ci-artifacts/
+          for file in Image Image-kpatch-next-exp .config System.map vmlinux.symvers; do
+            if [ -f "out/dist/${file}" ]; then
+              cp -f "out/dist/${file}" ci-artifacts/
+            fi
+          done
+
       - name: Upload flashable package
         uses: actions/upload-artifact@v4
         with:
           name: miro-kernel-ultra-${{ github.run_id }}
-          path: |
-            out/dist/*.zip
-            out/dist/SHA256SUMS
-            out/dist/Image
-            out/dist/Image-kpatch-next-exp
-            out/dist/.config
-            out/dist/System.map
-            out/dist/vmlinux.symvers
+          path: ci-artifacts/
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 14
+
+      - name: Stage build logs
+        if: always()
+        run: |
+          rm -rf ci-logs
+          mkdir -p ci-logs
+          for file in build.log modules_install.log; do
+            if [ -f "out/${file}" ]; then
+              tail -n 200000 "out/${file}" | gzip -9 > "ci-logs/${file}.gz"
+            fi
+          done
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs-${{ github.run_id }}
-          path: |
-            out/build.log
-            out/modules_install.log
+          path: ci-logs/
           if-no-files-found: warn
           retention-days: 14
 
