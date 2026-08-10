@@ -71,25 +71,41 @@ jobs:
         run: |
           scripts/ci/verify-artifacts.sh "${STANDARD_ZIP}" standard
           scripts/ci/verify-artifacts.sh "${KPATCH_ZIP}" kpatch-exp
-          cd out/dist
-          sha256sum *.zip > SHA256SUMS
 
       - name: Stage artifacts
         run: |
-          rm -rf ci-artifacts
-          mkdir -p ci-artifacts
-          cp -f out/dist/*.zip out/dist/SHA256SUMS ci-artifacts/
-          for file in Image Image-kpatch-next-exp .config System.map vmlinux.symvers; do
+          rm -rf ci-standard ci-kpatch
+          mkdir -p ci-standard ci-kpatch
+          cp -f "out/dist/${ANYKERNEL3_ZIP}" ci-standard/
+          cp -f "out/dist/${ANYKERNEL3_KPATCH_ZIP}" ci-kpatch/
+          sha256sum "ci-standard/${ANYKERNEL3_ZIP}" > ci-standard/SHA256SUMS-standard
+          sha256sum "ci-kpatch/${ANYKERNEL3_KPATCH_ZIP}" > ci-kpatch/SHA256SUMS-kpatch-exp
+          for file in Image .config System.map vmlinux.symvers; do
             if [ -f "out/dist/${file}" ]; then
-              cp -f "out/dist/${file}" ci-artifacts/
+              cp -f "out/dist/${file}" ci-standard/
             fi
           done
+          if [ -f out/dist/Image-kpatch-next-exp ]; then
+            cp -f out/dist/Image-kpatch-next-exp ci-kpatch/
+          fi
+        env:
+          ANYKERNEL3_ZIP: miro-kernel-ultra-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
+          ANYKERNEL3_KPATCH_ZIP: miro-kernel-ultra-kpatch-exp-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
 
-      - name: Upload flashable package
+      - name: Upload standard package
         uses: actions/upload-artifact@v4
         with:
-          name: miro-kernel-ultra-${{ github.run_id }}
-          path: ci-artifacts/
+          name: miro-kernel-ultra-standard-${{ github.run_id }}
+          path: ci-standard/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
+
+      - name: Upload KPatch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: miro-kernel-ultra-kpatch-exp-${{ github.run_id }}
+          path: ci-kpatch/
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 14
@@ -123,17 +139,22 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: miro-kernel-ultra-${{ github.run_id }}
-          path: release-assets
+          name: miro-kernel-ultra-standard-${{ github.run_id }}
+          path: release-assets/standard
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-kpatch-exp-${{ github.run_id }}
+          path: release-assets/kpatch-exp
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" release-assets/*.zip release-assets/SHA256SUMS --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release upload "${GITHUB_REF_NAME}" release-assets/standard/*.zip release-assets/kpatch-exp/*.zip release-assets/standard/SHA256SUMS-standard release-assets/kpatch-exp/SHA256SUMS-kpatch-exp --clobber --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "${GITHUB_REF_NAME}" release-assets/*.zip release-assets/SHA256SUMS \
+            gh release create "${GITHUB_REF_NAME}" release-assets/standard/*.zip release-assets/kpatch-exp/*.zip release-assets/standard/SHA256SUMS-standard release-assets/kpatch-exp/SHA256SUMS-kpatch-exp \
               --repo "${GITHUB_REPOSITORY}" \
               --title "miro-kernel-ultra ${GITHUB_REF_NAME}" \
               --notes "Redmi K80 Pro（24122RKC7C / miro）双版本内核。标准版集成 ReSukiSU 与 SUSFS；kpatch-exp 版额外嵌入 KPatch-Next KPM 运行时。KPatch 版本属于实验构建，刷入前请备份 boot，启动与 KPM 兼容性需要实机验证。"

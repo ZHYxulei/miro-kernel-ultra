@@ -610,7 +610,12 @@ build_kpatch_tools() {
             > "${KPATCH_NEXT_DIR}/tools/sha256.h"
         log "  Prepared sha256 source for the userspace tools build"
     fi
-    make -C "${KPATCH_NEXT_DIR}/tools"
+    if ! make -C "${KPATCH_NEXT_DIR}/tools"; then
+        rm -f "${KPATCH_NEXT_DIR}/tools/sha256.c" "${KPATCH_NEXT_DIR}/tools/sha256.h"
+        error "Failed to build KPatch-Next userspace tools."
+        exit 1
+    fi
+    rm -f "${KPATCH_NEXT_DIR}/tools/sha256.c" "${KPATCH_NEXT_DIR}/tools/sha256.h"
     [ -s "${KPATCH_KPIMG}" ] || { error "KPatch kpimg was not generated."; exit 1; }
     [ -x "${KPATCH_TOOLS}" ] || { error "KPatch kptools was not generated."; exit 1; }
     log "KPatch-Next version: $("${KPATCH_TOOLS}" -v -k "${KPATCH_KPIMG}")"
