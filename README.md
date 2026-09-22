@@ -10,6 +10,9 @@
 - 增加并完善 DroidSpaces 支持，为容器化 Android/Linux 用户空间提供所需的 IPC、namespace、网络过滤、用户命名空间和 TMPFS 能力。
 - 集成 SUSFS 支持，改善系统文件系统隐藏、隔离和兼容性能力。
 - 集成 ReSukiSU/KernelSU 支持，为内核级 root 管理和模块扩展提供基础。
+- 集成内核级基带保护（Baseband-guard），阻止对基带等受保护分区的非法写入。
+- 集成 ADIOS I/O 调度器，为同步请求提供学习型自适应低延迟，同时保持异步吞吐。
+- 提供完整 TMPFS 支持，并按上游跟进 lz4/zstd 等内核库版本。
 - 持续进行内核配置、驱动、稳定性、性能和功耗优化。
 - 在保证设备可启动性、GKI/KMI 兼容性和现有硬件功能的前提下，逐步完善设备支持。
 
@@ -24,6 +27,10 @@
 | DroidSpaces 配置片段 | 已接入构建配置 |
 | SUSFS | 已接入 |
 | ReSukiSU/KernelSU | 已接入（子模块） |
+| Baseband-guard 基带保护 | 已接入（LSM 模块） |
+| ADIOS I/O 调度器 | 已接入 |
+| TMPFS 完整支持 | 已接入（inode64 + quota） |
+| lz4 / zstd 内核库 | 已升级（zstd 1.5.7，lz4 from v6.18） |
 | KPatch-Next KPM 运行时 | 实验支持（静态修补 Image，双版本构建） |
 | AnyKernel3 刷机包打包 | 已支持（子模块） |
 | 稳定性、性能和功耗优化 | 持续进行 |
@@ -42,6 +49,18 @@ cmdline/bootconfig 伪造、open redirect 和内存映射隐藏等功能。SUSFS
 ReSukiSU/KernelSU 已作为 git 子模块接入，源码位于 `KernelSU/`（上游
 `ReSukiSU/ReSukiSU`），内核驱动通过符号链接 `drivers/kernelsu -> ../KernelSU/kernel`
 接入驱动树，并在 `gki_defconfig` 中启用了 `CONFIG_KSU` 和 `CONFIG_KSU_SUSFS`。
+
+## 设备源码基线
+
+设备侧 vendor 模块（Qualcomm Sun 平台 + 小米 miro 定制模块）以小米官方开源的
+[`MiCode/Xiaomi_Kernel_OpenSource`](https://github.com/MiCode/Xiaomi_Kernel_OpenSource)
+`bsp-miro-v-oss` 分支为基线，其基础 tag 为
+`qcom-LA.VENDOR.14.3.0.r1-14500-r1.0.r1_00042.0`。官方 vendor 配置片段
+[`sun_perf.config`](arch/arm64/configs/vendor/sun_perf.config) 已纳入本项目，
+小米定制的 in-tree 模块（`mi-t1-chip`、`sc96281_comp`、`ir-spi`、
+`leds-aw21024`、`powersave`、`unionpower`、`mtd` 系列等）在
+[`miro_perf.config`](arch/arm64/configs/vendor/miro_perf.config) 中以 `=m`
+模块形式启用。
 
 ## 基本信息
 
@@ -91,9 +110,9 @@ git submodule update --init --recursive
 ```bash
 git submodule status
 # 预期输出：
-#  058cdc931016cb2cb769ed063cce6d65d6df61e0 KernelSU (v4.1.0-1338-g058cdc93)
-#  <hash> AnyKernel3 (...)
-#  f873890e9b25e71d15ede71ea3d83584fb258b10 KPatch-Next (0.13.10)
+#  3576e6a5255fc880c00f6a3175d89268a6d942be KernelSU (v4.2.0-rc2)
+#  d80bb86cc905e7c7f14d87b16b1859b9d750277c AnyKernel3 (heads/master)
+#  c547574cb2e931b022c0ae40a6848d64d27aa57a KPatch-Next (0.13.13)
 ```
 
 确认驱动符号链接已就绪：
@@ -557,6 +576,69 @@ SUSFS 补丁源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
 统一激活。构建时 ReSukiSU 的 `inline_hook_check.mk` 会自动验证内核 hook 点
 是否存在，缺失则编译报错。
 
+## Baseband-guard（内核级基带保护）
+
+Baseband-guard 是一个 LSM（Linux Security Module）模块，用于阻止对基带等
+受保护分区的非法写入，防护通过漏洞工具链改写基带分区（例如刷入非官方
+modem/efs 镜像）的行为。
+
+- **源码位置**：`security/baseband-guard/`
+- **Kconfig 入口**：[`security/Kconfig`](security/Kconfig) 中
+  `source "security/baseband-guard/Kconfig"`
+- **构建入口**：[`security/Makefile`](security/Makefile) 中
+  `obj-$(CONFIG_BBG) += baseband-guard/`
+- **内核配置**（在 [`miro_perf.config`](arch/arm64/configs/vendor/miro_perf.config)
+  中启用）：
+  - `CONFIG_BBG=y` — 启用 Baseband-guard 模块
+  - `CONFIG_LSM="...,baseband_guard"` — 将模块加入 LSM 启用列表
+
+模块通过 `file_permission`、`file_ioctl`、`inode_setattr`、
+`bprm_creds_for_exec` 等 LSM 钩子拦截对受保护块设备的写入。构建时会检查
+`CONFIG_LSM` 是否包含 `baseband_guard`，缺失则给出告警。
+
+## ADIOS I/O 调度器
+
+ADIOS（Adaptive Deadline I/O Scheduler）是基于 `mq-deadline` 与 Kyber 的
+多队列 I/O 调度器，通过学习型自适应延迟控制，在维持异步请求吞吐的同时
+降低同步请求延迟，适合手机等交互式负载。
+
+- **源码位置**：[`block/adios.c`](block/adios.c)
+- **Kconfig**：[`block/Kconfig.iosched`](block/Kconfig.iosched) 中的
+  `CONFIG_MQ_IOSCHED_ADIOS`
+- **构建入口**：[`block/Makefile`](block/Makefile) 中
+  `obj-$(CONFIG_MQ_IOSCHED_ADIOS) += adios.o`
+- **内核配置**：`CONFIG_MQ_IOSCHED_ADIOS=y`
+- **调度器名称**：`adios`
+
+启用后可在运行时切换：
+
+```bash
+echo adios > /sys/block/sda/queue/scheduler
+```
+
+## TMPFS 完整支持
+
+在 DroidSpaces 提供的 TMPFS 能力之上，进一步启用完整的 TMPFS 功能：
+
+| 功能 | Kconfig 选项 | 说明 |
+| --- | --- | --- |
+| 64 位 inode 编号 | `CONFIG_TMPFS_INODE64` | 避免大容量 tmpfs 上的 inode 编号回绕 |
+| 配额支持 | `CONFIG_TMPFS_QUOTA` | 支持 tmpfs 的用户/组配额 |
+
+## 内核库升级
+
+为保证与上游一致的安全修复和性能改进，`lib/lz4`、`lib/zstd` 及其头文件
+已跟进较新内核版本：
+
+- **zstd**：升级至 `1.5.7`（取自 v6.18 内核树），替换 `lib/zstd/` 与
+  `include/linux/zstd*.h`，并新增 `lib/zstd/common/bits.h`、
+  `lib/zstd/common/allocations.h`、`lib/zstd/compress/zstd_preSplit.c`。
+  wrapper API 为纯增量，f2fs、crypto、erofs、squashfs、btrfs 等调用方
+  无需修改。
+- **lz4**：更新至 v6.18 内核树版本（`lib/lz4/` 与 `include/linux/lz4.h`）。
+- **兼容头**：新增 [`include/linux/unaligned.h`](include/linux/unaligned.h)，
+  为 arm64 提供通用非对齐访问包装（6.6 内核尚未提供该头文件）。
+
 ## 开发计划
 
 后续工作将按以下方向推进：
@@ -593,6 +675,8 @@ SUSFS 补丁源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
 
 - [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) — 内核级 root 管理和模块扩展框架
 - [SUSFS (susfs4ksu)](https://gitlab.com/simonpunk/susfs4ksu) — 内核级 root 隐藏和文件系统隔离补丁
+- [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) — 内核级基带等受保护分区写保护的 LSM 模块
+- [CachyOS kernel-patches](https://github.com/CachyOS/kernel-patches) — ADIOS I/O 调度器（作者 Masahito Suzuki）
 - [DroidSpaces](https://github.com/ravindu644/Droidspaces-OSS) — Android/Linux 容器化用户空间支持
 - [KPatch-Next-EXP](https://github.com/741afb7/KPatch-Next-EXP) — ARM64 内核静态修补、KPM 和动态内核补丁运行时
 - [AnyKernel3](https://github.com/osm0sis/AnyKernel3) — Android 内核刷机包打包工具
