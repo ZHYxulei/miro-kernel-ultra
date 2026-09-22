@@ -1,33 +1,41 @@
 # Kernel configurations for full DroidSpaces support for GKI
+#
+# Storage class matters here: only tristate options can be built as loadable
+# modules (=m). bool options (namespaces, devtmpfs, tmpfs features, sysvipc)
+# have no module form and must stay =y.
 
-# IPC
+# IPC (bool)
 CONFIG_SYSVIPC=y
 CONFIG_POSIX_MQUEUE=y
 
-# Namespaces
+# Namespaces (bool)
 CONFIG_IPC_NS=y
 CONFIG_PID_NS=y
 
-# HW Access Support
+# HW Access Support (bool)
 CONFIG_DEVTMPFS=y
 
-# Networking (Enhanced NAT support)
-CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+# Networking: NAT/LOG match helpers as loadable modules (tristate).
+# They are auto-loaded on demand through their module alias when a matching
+# iptables/ip6tables rule is installed.
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=m
 
-# Docker procfs fix
+# Docker procfs fix (bool)
 CONFIG_USER_NS=y
 
-# UFW support
-CONFIG_NETFILTER_XT_TARGET_REJECT=y
-CONFIG_NETFILTER_XT_TARGET_LOG=y
-CONFIG_NETFILTER_XT_MATCH_RECENT=y
+# UFW support.
+# CONFIG_NETFILTER_XT_TARGET_REJECT does not exist in 6.6: the REJECT target is
+# provided by IP_NF_TARGET_REJECT / IP6_NF_TARGET_REJECT (already =y), so only
+# the LOG target and the "recent" match are requested here.
+CONFIG_NETFILTER_XT_TARGET_LOG=m
+CONFIG_NETFILTER_XT_MATCH_RECENT=m
 
-# Fail2ban support
-CONFIG_IP_SET=y
-CONFIG_IP_SET_HASH_IP=y
-CONFIG_IP_SET_HASH_NET=y
-CONFIG_NETFILTER_XT_SET=y
+# Fail2ban support (tristate, auto-loaded on demand)
+CONFIG_IP_SET=m
+CONFIG_IP_SET_HASH_IP=m
+CONFIG_IP_SET_HASH_NET=m
+CONFIG_NETFILTER_XT_SET=m
 
-# TMPFS xattr / ACL
+# TMPFS xattr / ACL (bool)
 CONFIG_TMPFS_POSIX_ACL=y
 CONFIG_TMPFS_XATTR=y

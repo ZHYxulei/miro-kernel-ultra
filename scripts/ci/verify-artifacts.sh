@@ -59,9 +59,16 @@ else
     printf '%s\n' "${patch_info}" | grep -E '^(version|compile_time|arch)=' || true
 fi
 
-module_file="$(find "${dist_dir}/modules" -type f -name '*.ko' -print -quit 2>/dev/null || true)"
-if [ -n "${module_file}" ]; then
-    grep -Eq '^modules/.+\.ko$' <<< "${entries_text}" || fail "ZIP is missing kernel modules"
+# The kernel ships out-of-tree modules (CONFIG_*_=m); a ZIP without them boots
+# but silently loses functionality, so this must fail unconditionally instead of
+# only when the staging directory happens to be populated.
+grep -Eq '^modules/.+\.ko$' <<< "${entries_text}" || fail "ZIP is missing kernel modules"
+
+expected_modules="$(find "${dist_dir}/modules" -type f -name '*.ko' 2>/dev/null | wc -l)"
+if [ "${expected_modules}" -gt 0 ]; then
+    zipped_modules="$(grep -Ec '^modules/.+\.ko$' <<< "${entries_text}")"
+    [ "${zipped_modules}" -eq "${expected_modules}" ] ||
+        fail "ZIP carries ${zipped_modules} modules, expected ${expected_modules}"
 fi
 
 echo "Verified ${variant}: ${zip_file}"

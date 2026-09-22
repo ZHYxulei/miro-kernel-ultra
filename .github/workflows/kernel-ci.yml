@@ -7,6 +7,10 @@ on:
       - main
     tags:
       - "v*"
+  schedule:
+    # Nightly build at 18:00 UTC (02:00 Asia/Shanghai). An untested regression
+    # then shows up on its own instead of at the next tag.
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -42,6 +46,21 @@ jobs:
             libelf-dev libssl-dev libncurses-dev zlib1g-dev \
             perl python3 rsync xz-utils zstd
 
+      - name: Resolve build id
+        id: build-id
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            build_id="${GITHUB_REF_NAME}"
+          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            build_id="nightly-$(date -u +%Y%m%d)"
+          else
+            build_id="${GITHUB_SHA}"
+          fi
+          echo "build_id=${build_id}" >> "${GITHUB_OUTPUT}"
+          echo "standard_zip=miro-kernel-ultra-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "kpatch_zip=miro-kernel-ultra-kpatch-exp-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "debug_archive=miro-kernel-ultra-debug-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
+
       - uses: actions/cache@v4
         with:
           path: .ccache
@@ -58,28 +77,33 @@ jobs:
 
       - name: Build kernel
         env:
-          ANYKERNEL3_ZIP: miro-kernel-ultra-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
-          ANYKERNEL3_KPATCH_ZIP: miro-kernel-ultra-kpatch-exp-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
+          ANYKERNEL3_ZIP: ${{ steps.build-id.outputs.standard_zip }}
+          ANYKERNEL3_KPATCH_ZIP: ${{ steps.build-id.outputs.kpatch_zip }}
+          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.debug_archive }}
         run: |
-          chmod +x build.sh scripts/ci/verify-artifacts.sh
+          chmod +x build.sh scripts/ci/verify-artifacts.sh scripts/ci/smoke-boot-test.sh
           JOBS="$(nproc)" bash build.sh zip-dual
 
       - name: Verify artifacts
         env:
-          STANDARD_ZIP: out/dist/miro-kernel-ultra-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
-          KPATCH_ZIP: out/dist/miro-kernel-ultra-kpatch-exp-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
+          STANDARD_ZIP: out/dist/${{ steps.build-id.outputs.standard_zip }}
+          KPATCH_ZIP: out/dist/${{ steps.build-id.outputs.kpatch_zip }}
         run: |
           scripts/ci/verify-artifacts.sh "${STANDARD_ZIP}" standard
           scripts/ci/verify-artifacts.sh "${KPATCH_ZIP}" kpatch-exp
 
       - name: Stage artifacts
         run: |
-          rm -rf ci-standard ci-kpatch
-          mkdir -p ci-standard ci-kpatch
+          rm -rf ci-standard ci-kpatch ci-debug
+          mkdir -p ci-standard ci-kpatch ci-debug
           cp -f "out/dist/${ANYKERNEL3_ZIP}" ci-standard/
           cp -f "out/dist/${ANYKERNEL3_KPATCH_ZIP}" ci-kpatch/
-          sha256sum "ci-standard/${ANYKERNEL3_ZIP}" > ci-standard/SHA256SUMS-standard
-          sha256sum "ci-kpatch/${ANYKERNEL3_KPATCH_ZIP}" > ci-kpatch/SHA256SUMS-kpatch-exp
+          cp -f "out/dist/${DEBUG_SYMBOLS_ARCHIVE}" ci-debug/
+          # Bare filenames, so `sha256sum -c SHA256SUMS-standard` works straight
+          # from the download directory on any platform.
+          ( cd ci-standard && sha256sum "${ANYKERNEL3_ZIP}" > SHA256SUMS-standard )
+          ( cd ci-kpatch && sha256sum "${ANYKERNEL3_KPATCH_ZIP}" > SHA256SUMS-kpatch-exp )
+          ( cd ci-debug && sha256sum "${DEBUG_SYMBOLS_ARCHIVE}" > SHA256SUMS-debug )
           for file in Image .config System.map vmlinux.symvers; do
             if [ -f "out/dist/${file}" ]; then
               cp -f "out/dist/${file}" ci-standard/
@@ -89,8 +113,9 @@ jobs:
             cp -f out/dist/Image-kpatch-next-exp ci-kpatch/
           fi
         env:
-          ANYKERNEL3_ZIP: miro-kernel-ultra-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
-          ANYKERNEL3_KPATCH_ZIP: miro-kernel-ultra-kpatch-exp-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}.zip
+          ANYKERNEL3_ZIP: ${{ steps.build-id.outputs.standard_zip }}
+          ANYKERNEL3_KPATCH_ZIP: ${{ steps.build-id.outputs.kpatch_zip }}
+          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.debug_archive }}
 
       - name: Upload standard package
         uses: actions/upload-artifact@v4
@@ -108,6 +133,14 @@ jobs:
           path: ci-kpatch/
           if-no-files-found: error
           include-hidden-files: true
+          retention-days: 14
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: miro-kernel-ultra-debug-${{ github.run_id }}
+          path: ci-debug/
+          if-no-files-found: error
           retention-days: 14
 
       - name: Stage build logs
@@ -130,13 +163,44 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  smoke-test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU and cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm clang lld cpio
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-standard-${{ github.run_id }}
+          path: smoke-artifacts
+
+      - name: Boot the produced kernel under QEMU
+        run: |
+          chmod +x scripts/ci/smoke-boot-test.sh
+          scripts/ci/smoke-boot-test.sh smoke-artifacts/Image
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, smoke-test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - uses: actions/download-artifact@v4
         with:
           name: miro-kernel-ultra-standard-${{ github.run_id }}
@@ -147,15 +211,39 @@ jobs:
           name: miro-kernel-ultra-kpatch-exp-${{ github.run_id }}
           path: release-assets/kpatch-exp
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-debug-${{ github.run_id }}
+          path: release-assets/debug
+
+      - name: Generate bilingual release notes
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x scripts/ci/release-notes.sh
+          scripts/ci/release-notes.sh "${GITHUB_REF_NAME}" release-notes.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          assets=(
+            release-assets/standard/*.zip
+            release-assets/kpatch-exp/*.zip
+            release-assets/debug/*.tar.zst
+            release-assets/standard/SHA256SUMS-standard
+            release-assets/kpatch-exp/SHA256SUMS-kpatch-exp
+            release-assets/debug/SHA256SUMS-debug
+          )
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" release-assets/standard/*.zip release-assets/kpatch-exp/*.zip release-assets/standard/SHA256SUMS-standard release-assets/kpatch-exp/SHA256SUMS-kpatch-exp --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "miro-kernel-ultra ${GITHUB_REF_NAME}" \
+              --notes-file release-notes.md \
+              --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "${GITHUB_REF_NAME}" release-assets/standard/*.zip release-assets/kpatch-exp/*.zip release-assets/standard/SHA256SUMS-standard release-assets/kpatch-exp/SHA256SUMS-kpatch-exp \
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "miro-kernel-ultra ${GITHUB_REF_NAME}" \
-              --notes "Redmi K80 Pro（24122RKC7C / miro）双版本内核。标准版集成 ReSukiSU 与 SUSFS；kpatch-exp 版额外嵌入 KPatch-Next KPM 运行时。KPatch 版本属于实验构建，刷入前请备份 boot，启动与 KPM 兼容性需要实机验证。"
+              --notes-file release-notes.md
           fi
