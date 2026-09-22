@@ -173,10 +173,19 @@ ANYKERNEL3_DIR="AnyKernel3"
 ANYKERNEL3_REPO="https://github.com/ZHYxulei/AnyKernel3.git"
 ANYKERNEL3_ZIP="${ANYKERNEL3_ZIP:-miro-kernel-ultra-$(date +%Y%m%d-%H%M).zip}"
 ANYKERNEL3_KPATCH_ZIP="${ANYKERNEL3_KPATCH_ZIP:-miro-kernel-ultra-kpatch-exp-$(date +%Y%m%d-%H%M).zip}"
+# Debug builds differ from the release ones only in the modules they carry: the
+# .ko files keep their full debug info so a crash can be resolved with objdump.
+ANYKERNEL3_DEBUG_ZIP="${ANYKERNEL3_DEBUG_ZIP:-miro-kernel-ultra-debug-$(date +%Y%m%d-%H%M).zip}"
+ANYKERNEL3_KPATCH_DEBUG_ZIP="${ANYKERNEL3_KPATCH_DEBUG_ZIP:-miro-kernel-ultra-kpatch-exp-debug-$(date +%Y%m%d-%H%M).zip}"
 
 # Symbol archive shipped next to the flashable zips so a crash report can be
 # turned back into function names (unstripped modules + vmlinux + System.map).
-DEBUG_SYMBOLS_ARCHIVE="${DEBUG_SYMBOLS_ARCHIVE:-miro-kernel-ultra-debug-$(date +%Y%m%d-%H%M).tar.zst}"
+DEBUG_SYMBOLS_ARCHIVE="${DEBUG_SYMBOLS_ARCHIVE:-miro-kernel-ultra-debug-symbols-$(date +%Y%m%d-%H%M).tar.zst}"
+
+# Module trees produced by install_modules(); the release zips carry the
+# stripped one, the debug zips the untouched one.
+MODULES_TREE_RELEASE="modules_install_release"
+MODULES_TREE_DEBUG="modules_install"
 
 KPATCH_NEXT_DIR="KPatch-Next"
 KPATCH_KPIMG="${KPATCH_NEXT_DIR}/kernel/kpimg"
@@ -565,10 +574,10 @@ copy_outputs() {
         cp "${KERNEL_DTBO}" "${DIST_DIR}/"
     fi
 
-    # Kernel modules - the stripped tree, i.e. exactly what the flashable zips carry
+    # Kernel modules - the stripped tree, i.e. exactly what the release zips carry
     rm -rf "${DIST_DIR}/modules"
-    if [ -d "${OUT_DIR}/modules_install_release" ]; then
-        cp -r "${OUT_DIR}/modules_install_release" "${DIST_DIR}/modules"
+    if [ -d "${OUT_DIR}/${MODULES_TREE_RELEASE}" ]; then
+        cp -r "${OUT_DIR}/${MODULES_TREE_RELEASE}" "${DIST_DIR}/modules"
     fi
 
     # vmlinux symbols (useful for debugging)
@@ -588,7 +597,7 @@ copy_outputs() {
 package_debug_symbols() {
     local archive_path="${DIST_DIR}/${DEBUG_SYMBOLS_ARCHIVE}"
 
-    if [ ! -d "${OUT_DIR}/modules_install" ]; then
+    if [ ! -d "${OUT_DIR}/${MODULES_TREE_DEBUG}" ]; then
         log "No unstripped module tree, skipping symbol archive"
         return 0
     fi
@@ -598,7 +607,7 @@ package_debug_symbols() {
     rm -rf "${staging}"
     mkdir -p "${staging}"
 
-    cp -r "${OUT_DIR}/modules_install/lib" "${staging}/lib"
+    cp -r "${OUT_DIR}/${MODULES_TREE_DEBUG}/lib" "${staging}/lib"
     local file
     for file in vmlinux System.map .config; do
         [ -f "${OUT_DIR}/${file}" ] && cp "${OUT_DIR}/${file}" "${staging}/"
@@ -620,13 +629,13 @@ install_modules() {
 
     # Two trees are produced from the same objects:
     #   modules_install          keeps debug info -> packaged as the symbol archive
-    #   modules_install_release  debug info stripped -> what the flashable ZIP ships
-    local install_trees=("modules_install" "modules_install_release")
+    #   modules_install_release  debug info stripped -> what the release ZIP ships
+    local install_trees=("${MODULES_TREE_DEBUG}" "${MODULES_TREE_RELEASE}")
     local tree strip_flag mod_status
     : > "$mod_log"
     for tree in "${install_trees[@]}"; do
         strip_flag=""
-        if [ "${tree}" = modules_install_release ]; then
+        if [ "${tree}" = "${MODULES_TREE_RELEASE}" ]; then
             strip_flag="INSTALL_MOD_STRIP=1"
         fi
         log "  Installing into ${tree}${strip_flag:+ (stripped)}"
@@ -652,8 +661,8 @@ install_modules() {
     # flashable zip would ship without any .ko while anykernel.sh still
     # advertises do.modules=1.
     local debug_count release_count debug_size release_size
-    debug_count="$(find "${OUT_DIR}/modules_install" -name '*.ko' 2>/dev/null | wc -l)"
-    release_count="$(find "${OUT_DIR}/modules_install_release" -name '*.ko' 2>/dev/null | wc -l)"
+    debug_count="$(find "${OUT_DIR}/${MODULES_TREE_DEBUG}" -name '*.ko' 2>/dev/null | wc -l)"
+    release_count="$(find "${OUT_DIR}/${MODULES_TREE_RELEASE}" -name '*.ko' 2>/dev/null | wc -l)"
     if [ "${debug_count}" -eq 0 ] || [ "${release_count}" -eq 0 ]; then
         error "modules_install produced no modules (debug=${debug_count}, release=${release_count})"
         exit 1
@@ -665,8 +674,8 @@ install_modules() {
 
     # If INSTALL_MOD_STRIP ever stops taking effect the release ZIP silently
     # triples in size, so fail loudly instead.
-    debug_size="$(du -sb "${OUT_DIR}/modules_install" | cut -f1)"
-    release_size="$(du -sb "${OUT_DIR}/modules_install_release" | cut -f1)"
+    debug_size="$(du -sb "${OUT_DIR}/${MODULES_TREE_DEBUG}" | cut -f1)"
+    release_size="$(du -sb "${OUT_DIR}/${MODULES_TREE_RELEASE}" | cut -f1)"
     if [ "${release_size}" -ge "${debug_size}" ]; then
         error "INSTALL_MOD_STRIP=1 had no effect (release=${release_size}B, debug=${debug_size}B)"
         exit 1
@@ -759,7 +768,10 @@ package_anykernel3() {
     local image_path="${1:-${KERNEL_IMAGE}}"
     local zip_name="${2:-${ANYKERNEL3_ZIP}}"
     local package_kernel_name="${3:-${KERNEL_NAME}}"
-    log "Packaging AnyKernel3 flashable zip..."
+    # Tree holding lib/modules/*; the release zips use the stripped one, the
+    # debug zips the unstripped one. Everything else is identical.
+    local modules_tree="${4:-${OUT_DIR}/${MODULES_TREE_RELEASE}}"
+    log "Packaging AnyKernel3 flashable zip (modules: ${modules_tree})..."
 
     setup_anykernel3
 
@@ -775,26 +787,38 @@ package_anykernel3() {
         exit 1
     fi
 
-    # Copy DTB blob
+    # Copy DTB blob. This tree leaves arch/arm64/boot/dts/vendor empty, so no
+    # vendor DTB is produced and the ZIP ships the Image only, keeping the stock
+    # dtb/dtbo on the device. Still prefer the blob copy_outputs() concatenated
+    # so the zips can also be produced without the full build tree around.
     local dts_dir="${OUT_DIR}/arch/${ARCH}/boot/dts/vendor/qcom"
-    if [ -d "${dts_dir}" ]; then
+    if [ -f "${DIST_DIR}/dtb" ]; then
+        cp "${DIST_DIR}/dtb" "${ANYKERNEL3_DIR}/dtb"
+        log "  Copied dtb"
+    elif [ -d "${dts_dir}" ] && [ -n "$(find "${dts_dir}" -name '*.dtb' -print -quit)" ]; then
         find "${dts_dir}" -name '*.dtb' -exec cat {} + > "${ANYKERNEL3_DIR}/dtb"
         log "  Copied dtb"
+    else
+        log "  No dtb produced by this tree, keeping stock dtb/dtbo"
     fi
 
     # Copy DTBO image
-    if [ -f "${KERNEL_DTBO}" ]; then
-        cp "${KERNEL_DTBO}" "${ANYKERNEL3_DIR}/"
+    local dtbo_src="${KERNEL_DTBO}"
+    [ -f "${dtbo_src}" ] || dtbo_src="${DIST_DIR}/dtbo.img"
+    if [ -f "${dtbo_src}" ]; then
+        cp "${dtbo_src}" "${ANYKERNEL3_DIR}/"
         log "  Copied dtbo.img"
     fi
 
-    # Copy kernel modules (stripped tree; the unstripped one goes into the
-    # symbol archive instead of the flashable ZIP)
-    if [ -d "${OUT_DIR}/modules_install_release" ]; then
-        mkdir -p "${ANYKERNEL3_DIR}/modules"
-        cp -r "${OUT_DIR}/modules_install_release/lib/modules/"* "${ANYKERNEL3_DIR}/modules/"
-        log "  Copied modules"
+    # Copy kernel modules. A ZIP without modules still boots but silently loses
+    # functionality, so a missing tree is a hard error.
+    if [ ! -d "${modules_tree}/lib/modules" ]; then
+        error "Module tree not found: ${modules_tree}/lib/modules"
+        exit 1
     fi
+    mkdir -p "${ANYKERNEL3_DIR}/modules"
+    cp -r "${modules_tree}/lib/modules/"* "${ANYKERNEL3_DIR}/modules/"
+    log "  Copied modules ($(find "${ANYKERNEL3_DIR}/modules" -name '*.ko' | wc -l) .ko)"
 
     # Configure anykernel.sh for this device
     local ak3_sh="${ANYKERNEL3_DIR}/anykernel.sh"
@@ -827,9 +851,23 @@ package_anykernel3() {
     log "AnyKernel3 zip created: ${zip_path}"
 }
 
+# Release pair: standard + KPatch-Next EXP, both carrying stripped modules.
 package_dual_anykernel3() {
-    package_anykernel3 "${KERNEL_IMAGE}" "${ANYKERNEL3_ZIP}" "${KERNEL_NAME}"
-    package_anykernel3 "${KPATCHED_IMAGE}" "${ANYKERNEL3_KPATCH_ZIP}" "${KERNEL_NAME} KPatch-Next EXP"
+    package_anykernel3 "${KERNEL_IMAGE}" "${ANYKERNEL3_ZIP}" "${KERNEL_NAME}" "${OUT_DIR}/${MODULES_TREE_RELEASE}"
+    package_anykernel3 "${KPATCHED_IMAGE}" "${ANYKERNEL3_KPATCH_ZIP}" "${KERNEL_NAME} KPatch-Next EXP" "${OUT_DIR}/${MODULES_TREE_RELEASE}"
+}
+
+# Debug pair: same images, same AnyKernel3 config, but the modules keep their
+# debug info so a crash address can be resolved with objdump.
+package_debug_anykernel3() {
+    package_anykernel3 "${KERNEL_IMAGE}" "${ANYKERNEL3_DEBUG_ZIP}" "${KERNEL_NAME}" "${OUT_DIR}/${MODULES_TREE_DEBUG}"
+    package_anykernel3 "${KPATCHED_IMAGE}" "${ANYKERNEL3_KPATCH_DEBUG_ZIP}" "${KERNEL_NAME} KPatch-Next EXP" "${OUT_DIR}/${MODULES_TREE_DEBUG}"
+}
+
+# All four zips: release standard/KPatch plus their debug counterparts.
+package_quad_anykernel3() {
+    package_dual_anykernel3
+    package_debug_anykernel3
 }
 
 clean() {
@@ -1005,7 +1043,10 @@ Commands:
   all         Build kernel, install modules, and copy outputs to out/dist
   zip         Build kernel and package AnyKernel3 flashable zip
   kpatch      Patch an existing kernel Image with KPatch-Next EXP
-  zip-dual    Build standard and KPatch-Next EXP flashable zips
+  zip-dual    Build the release pair (standard + KPatch-Next EXP zips)
+  zip-quad    Build all four zips (release + debug, standard + KPatch-Next EXP)
+  package-release  Package the release pair from existing out/ outputs
+  package-debug    Package the debug pair from existing out/ outputs
   package     Package AnyKernel3 zip from existing out/dist outputs
   modules     Install kernel modules (run after 'kernel')
   toolchain   Show current toolchain configuration
@@ -1025,7 +1066,11 @@ Environment variables:
   CCACHE_DIR        Override ccache directory (default: ~/.ccache)
   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
   KPATCH_TARGET_COMPILE  KPatch ARM64 bare-metal toolchain prefix (auto-download aarch64-none-elf- if unset)
-  ANYKERNEL3_KPATCH_ZIP  Override KPatch-Next EXP zip filename
+  ANYKERNEL3_ZIP         Override standard release zip filename
+  ANYKERNEL3_KPATCH_ZIP  Override KPatch-Next EXP release zip filename
+  ANYKERNEL3_DEBUG_ZIP         Override debug standard zip filename
+  ANYKERNEL3_KPATCH_DEBUG_ZIP  Override debug KPatch-Next EXP zip filename
+  DEBUG_SYMBOLS_ARCHIVE  Override debug symbols archive filename
 
 AnyKernel3 configuration:
   AK3_DEVICE_CHECK  Set to 1 to enable device name check (default: 1)
@@ -1051,7 +1096,9 @@ Examples:
   bash build.sh quick                                  # One-command: update+menuconfig+build+package
   bash build.sh install-deps                           # Install build dependencies
   bash build.sh zip                                    # Full build + flashable zip
-  bash build.sh zip-dual                               # Build standard + KPatch EXP zips
+  bash build.sh zip-dual                               # Build release standard + KPatch EXP zips
+  bash build.sh zip-quad                               # Build all four zips (release + debug)
+  bash build.sh package-debug                          # Re-package the debug zips only
   bash build.sh kpatch                                 # Patch an existing kernel Image
   bash build.sh all                                    # Full build without packaging
   bash build.sh fast                                   # Quick build (no modules)
@@ -1151,6 +1198,24 @@ main() {
             patch_kernel_image
             package_dual_anykernel3
             log "Total time: $(elapsed)"
+            ;;
+        zip-quad)
+            check_prerequisites
+            init_submodules
+            clean_source_tree
+            make_defconfig
+            build_kernel
+            install_modules
+            copy_outputs
+            patch_kernel_image
+            package_quad_anykernel3
+            log "Total time: $(elapsed)"
+            ;;
+        package-release)
+            package_dual_anykernel3
+            ;;
+        package-debug)
+            package_debug_anykernel3
             ;;
         package)
             package_anykernel3

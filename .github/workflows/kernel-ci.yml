@@ -18,6 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The kernel is compiled exactly once. The two packaging jobs below turn the
+  # same build into the release pair and the debug pair in parallel, so shipping
+  # the debug packages costs no extra compilation time.
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -28,6 +31,12 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       KBUILD_BUILD_USER: github-actions
       KBUILD_BUILD_HOST: github
+    outputs:
+      standard_zip: ${{ steps.build-id.outputs.standard_zip }}
+      kpatch_zip: ${{ steps.build-id.outputs.kpatch_zip }}
+      debug_zip: ${{ steps.build-id.outputs.debug_zip }}
+      kpatch_debug_zip: ${{ steps.build-id.outputs.kpatch_debug_zip }}
+      symbols_archive: ${{ steps.build-id.outputs.symbols_archive }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,7 +68,9 @@ jobs:
           echo "build_id=${build_id}" >> "${GITHUB_OUTPUT}"
           echo "standard_zip=miro-kernel-ultra-${build_id}.zip" >> "${GITHUB_OUTPUT}"
           echo "kpatch_zip=miro-kernel-ultra-kpatch-exp-${build_id}.zip" >> "${GITHUB_OUTPUT}"
-          echo "debug_archive=miro-kernel-ultra-debug-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
+          echo "debug_zip=miro-kernel-ultra-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "kpatch_debug_zip=miro-kernel-ultra-kpatch-exp-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "symbols_archive=miro-kernel-ultra-debug-symbols-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/cache@v4
         with:
@@ -77,70 +88,76 @@ jobs:
 
       - name: Build kernel
         env:
-          ANYKERNEL3_ZIP: ${{ steps.build-id.outputs.standard_zip }}
-          ANYKERNEL3_KPATCH_ZIP: ${{ steps.build-id.outputs.kpatch_zip }}
-          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.debug_archive }}
+          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive }}
         run: |
           chmod +x build.sh scripts/ci/verify-artifacts.sh scripts/ci/smoke-boot-test.sh
-          JOBS="$(nproc)" bash build.sh zip-dual
+          JOBS="$(nproc)" bash build.sh all
+          JOBS="$(nproc)" bash build.sh kpatch
 
-      - name: Verify artifacts
-        env:
-          STANDARD_ZIP: out/dist/${{ steps.build-id.outputs.standard_zip }}
-          KPATCH_ZIP: out/dist/${{ steps.build-id.outputs.kpatch_zip }}
+      # Everything the two packaging jobs read, laid out exactly like the build
+      # tree so they can reuse build.sh with OUT_DIR pointed at it.
+      # dtb/dtbo.img are optional: this tree does not build vendor DTBs, so the
+      # packages ship the Image only and the device keeps its stock dtb/dtbo.
+      - name: Stage kernel outputs for packaging
         run: |
-          scripts/ci/verify-artifacts.sh "${STANDARD_ZIP}" standard
-          scripts/ci/verify-artifacts.sh "${KPATCH_ZIP}" kpatch-exp
-
-      - name: Stage artifacts
-        run: |
-          rm -rf ci-standard ci-kpatch ci-debug
-          mkdir -p ci-standard ci-kpatch ci-debug
-          cp -f "out/dist/${ANYKERNEL3_ZIP}" ci-standard/
-          cp -f "out/dist/${ANYKERNEL3_KPATCH_ZIP}" ci-kpatch/
-          cp -f "out/dist/${DEBUG_SYMBOLS_ARCHIVE}" ci-debug/
-          # Bare filenames, so `sha256sum -c SHA256SUMS-standard` works straight
-          # from the download directory on any platform.
-          ( cd ci-standard && sha256sum "${ANYKERNEL3_ZIP}" > SHA256SUMS-standard )
-          ( cd ci-kpatch && sha256sum "${ANYKERNEL3_KPATCH_ZIP}" > SHA256SUMS-kpatch-exp )
-          ( cd ci-debug && sha256sum "${DEBUG_SYMBOLS_ARCHIVE}" > SHA256SUMS-debug )
-          for file in Image .config System.map vmlinux.symvers; do
+          rm -rf ci-kernel
+          mkdir -p ci-kernel/out/dist ci-kernel/out/arch/arm64/boot ci-kernel/KPatch-Next/tools
+          for file in Image Image-kpatch-next-exp dtb dtbo.img; do
             if [ -f "out/dist/${file}" ]; then
-              cp -f "out/dist/${file}" ci-standard/
+              cp -f "out/dist/${file}" ci-kernel/out/dist/
             fi
           done
-          if [ -f out/dist/Image-kpatch-next-exp ]; then
-            cp -f out/dist/Image-kpatch-next-exp ci-kpatch/
-          fi
+          # Image stays in the arch/arm64/boot layout too, because build.sh reads
+          # the standard image from there (KERNEL_IMAGE) and only the KPatch one
+          # from out/dist (KPATCHED_IMAGE).
+          for file in Image dtbo.img dtb; do
+            if [ -f "out/arch/arm64/boot/${file}" ]; then
+              cp -f "out/arch/arm64/boot/${file}" ci-kernel/out/arch/arm64/boot/
+            fi
+          done
+          cp -r out/modules_install ci-kernel/out/modules_install
+          cp -r out/modules_install_release ci-kernel/out/modules_install_release
+          cp -f KPatch-Next/tools/kptools ci-kernel/KPatch-Next/tools/
+
+      - name: Upload kernel outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: miro-kernel-ultra-kernel-${{ github.run_id }}
+          path: ci-kernel/
+          if-no-files-found: error
+          retention-days: 14
+
+      # Symbol archive and the raw build metadata. `vmlinux` is deliberately not
+      # uploaded on its own: it is inside the symbol archive already.
+      - name: Stage debug symbols archive
+        run: |
+          rm -rf ci-symbols
+          mkdir -p ci-symbols
+          cp -f "out/dist/${DEBUG_SYMBOLS_ARCHIVE}" ci-symbols/
+          for file in Image System.map vmlinux.symvers .config; do
+            if [ -f "out/dist/${file}" ]; then
+              cp -f "out/dist/${file}" ci-symbols/
+            fi
+          done
+          # Bare filenames, so `sha256sum -c SHA256SUMS-debug-symbols` works
+          # straight from the download directory on any platform.
+          sums_files=("${DEBUG_SYMBOLS_ARCHIVE}")
+          for file in System.map vmlinux.symvers; do
+            if [ -f "ci-symbols/${file}" ]; then
+              sums_files+=("${file}")
+            fi
+          done
+          ( cd ci-symbols && sha256sum "${sums_files[@]}" > SHA256SUMS-debug-symbols )
         env:
-          ANYKERNEL3_ZIP: ${{ steps.build-id.outputs.standard_zip }}
-          ANYKERNEL3_KPATCH_ZIP: ${{ steps.build-id.outputs.kpatch_zip }}
-          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.debug_archive }}
+          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive }}
 
-      - name: Upload standard package
+      - name: Upload debug symbols archive
         uses: actions/upload-artifact@v4
         with:
-          name: miro-kernel-ultra-standard-${{ github.run_id }}
-          path: ci-standard/
+          name: miro-kernel-ultra-symbols-${{ github.run_id }}
+          path: ci-symbols/
           if-no-files-found: error
           include-hidden-files: true
-          retention-days: 14
-
-      - name: Upload KPatch package
-        uses: actions/upload-artifact@v4
-        with:
-          name: miro-kernel-ultra-kpatch-exp-${{ github.run_id }}
-          path: ci-kpatch/
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 14
-
-      - name: Upload debug symbols
-        uses: actions/upload-artifact@v4
-        with:
-          name: miro-kernel-ultra-debug-${{ github.run_id }}
-          path: ci-debug/
-          if-no-files-found: error
           retention-days: 14
 
       - name: Stage build logs
@@ -163,6 +180,124 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # Release pair: standard + KPatch-Next EXP, modules stripped. Runs in parallel
+  # with the debug packaging job.
+  package-release:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      ANYKERNEL3_ZIP: ${{ needs.build.outputs.standard_zip }}
+      ANYKERNEL3_KPATCH_ZIP: ${{ needs.build.outputs.kpatch_zip }}
+      MODULES_REF_DIR: ci-kernel/out/modules_install_release
+      KPATCH_TOOLS: ci-kernel/KPatch-Next/tools/kptools
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip unzip
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-kernel-${{ github.run_id }}
+          path: ci-kernel
+
+      - name: Package release zips
+        run: |
+          chmod +x build.sh scripts/ci/verify-artifacts.sh
+          chmod +x ci-kernel/KPatch-Next/tools/kptools
+          OUT_DIR=ci-kernel/out bash build.sh package-release
+          scripts/ci/verify-artifacts.sh "ci-kernel/out/dist/${ANYKERNEL3_ZIP}" standard
+          scripts/ci/verify-artifacts.sh "ci-kernel/out/dist/${ANYKERNEL3_KPATCH_ZIP}" kpatch-exp
+
+      - name: Stage release artifacts
+        run: |
+          rm -rf ci-release
+          mkdir -p ci-release
+          cp -f "ci-kernel/out/dist/${ANYKERNEL3_ZIP}" "ci-kernel/out/dist/${ANYKERNEL3_KPATCH_ZIP}" ci-release/
+          standard_files=("${ANYKERNEL3_ZIP}")
+          kpatch_files=("${ANYKERNEL3_KPATCH_ZIP}")
+          # The raw images are published too so the kernel can be flashed by
+          # hand (fastboot) without unpacking an AnyKernel3 ZIP.
+          if [ -f ci-kernel/out/dist/Image ]; then
+            cp -f ci-kernel/out/dist/Image ci-release/
+            standard_files+=(Image)
+          fi
+          if [ -f ci-kernel/out/dist/Image-kpatch-next-exp ]; then
+            cp -f ci-kernel/out/dist/Image-kpatch-next-exp ci-release/
+            kpatch_files+=(Image-kpatch-next-exp)
+          fi
+          ( cd ci-release && sha256sum "${standard_files[@]}" > SHA256SUMS-standard )
+          ( cd ci-release && sha256sum "${kpatch_files[@]}" > SHA256SUMS-kpatch-exp )
+
+      - name: Upload release packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: miro-kernel-ultra-release-${{ github.run_id }}
+          path: ci-release/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Debug pair: identical images and AnyKernel3 config, modules keep their debug
+  # info so a crash address can be resolved with objdump.
+  package-debug:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      ANYKERNEL3_DEBUG_ZIP: ${{ needs.build.outputs.debug_zip }}
+      ANYKERNEL3_KPATCH_DEBUG_ZIP: ${{ needs.build.outputs.kpatch_debug_zip }}
+      MODULES_REF_DIR: ci-kernel/out/modules_install
+      KPATCH_TOOLS: ci-kernel/KPatch-Next/tools/kptools
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip unzip
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-kernel-${{ github.run_id }}
+          path: ci-kernel
+
+      - name: Package debug zips
+        run: |
+          chmod +x build.sh scripts/ci/verify-artifacts.sh
+          chmod +x ci-kernel/KPatch-Next/tools/kptools
+          OUT_DIR=ci-kernel/out bash build.sh package-debug
+          scripts/ci/verify-artifacts.sh "ci-kernel/out/dist/${ANYKERNEL3_DEBUG_ZIP}" debug
+          scripts/ci/verify-artifacts.sh "ci-kernel/out/dist/${ANYKERNEL3_KPATCH_DEBUG_ZIP}" debug-kpatch-exp
+
+      - name: Stage debug artifacts
+        run: |
+          rm -rf ci-debug
+          mkdir -p ci-debug
+          cp -f "ci-kernel/out/dist/${ANYKERNEL3_DEBUG_ZIP}" "ci-kernel/out/dist/${ANYKERNEL3_KPATCH_DEBUG_ZIP}" ci-debug/
+          ( cd ci-debug && sha256sum "${ANYKERNEL3_DEBUG_ZIP}" > SHA256SUMS-debug )
+          ( cd ci-debug && sha256sum "${ANYKERNEL3_KPATCH_DEBUG_ZIP}" > SHA256SUMS-debug-kpatch-exp )
+
+      - name: Upload debug packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: miro-kernel-ultra-debug-${{ github.run_id }}
+          path: ci-debug/
+          if-no-files-found: error
+          retention-days: 14
+
   smoke-test:
     needs: build
     runs-on: ubuntu-24.04
@@ -181,17 +316,17 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: miro-kernel-ultra-standard-${{ github.run_id }}
-          path: smoke-artifacts
+          name: miro-kernel-ultra-kernel-${{ github.run_id }}
+          path: ci-kernel
 
       - name: Boot the produced kernel under QEMU
         run: |
           chmod +x scripts/ci/smoke-boot-test.sh
-          scripts/ci/smoke-boot-test.sh smoke-artifacts/Image
+          scripts/ci/smoke-boot-test.sh ci-kernel/out/dist/Image
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, smoke-test]
+    needs: [package-release, package-debug, smoke-test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -203,18 +338,18 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: miro-kernel-ultra-standard-${{ github.run_id }}
-          path: release-assets/standard
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: miro-kernel-ultra-kpatch-exp-${{ github.run_id }}
-          path: release-assets/kpatch-exp
+          name: miro-kernel-ultra-release-${{ github.run_id }}
+          path: release-assets/release
 
       - uses: actions/download-artifact@v4
         with:
           name: miro-kernel-ultra-debug-${{ github.run_id }}
           path: release-assets/debug
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-symbols-${{ github.run_id }}
+          path: release-assets/symbols
 
       - name: Generate bilingual release notes
         env:
@@ -228,12 +363,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           assets=(
-            release-assets/standard/*.zip
-            release-assets/kpatch-exp/*.zip
-            release-assets/debug/*.tar.zst
-            release-assets/standard/SHA256SUMS-standard
-            release-assets/kpatch-exp/SHA256SUMS-kpatch-exp
+            release-assets/release/*.zip
+            release-assets/debug/*.zip
+            release-assets/release/Image
+            release-assets/release/Image-kpatch-next-exp
+            release-assets/symbols/*.tar.zst
+            release-assets/symbols/System.map
+            release-assets/symbols/vmlinux.symvers
+            release-assets/release/SHA256SUMS-standard
+            release-assets/release/SHA256SUMS-kpatch-exp
             release-assets/debug/SHA256SUMS-debug
+            release-assets/debug/SHA256SUMS-debug-kpatch-exp
+            release-assets/symbols/SHA256SUMS-debug-symbols
           )
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber --repo "${GITHUB_REPOSITORY}"

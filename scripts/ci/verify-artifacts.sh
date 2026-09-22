@@ -21,8 +21,23 @@ require_config() {
     grep -Fxq -- "${setting}" <<< "${anykernel_config}" || fail "anykernel.sh is missing ${setting}"
 }
 
-[ -n "${zip_file}" ] || fail "usage: $0 <zip-file> <standard|kpatch-exp>"
-[ "${variant}" = standard ] || [ "${variant}" = kpatch-exp ] || fail "unknown variant: ${variant}"
+[ -n "${zip_file}" ] || fail "usage: $0 <zip-file> <standard|kpatch-exp|debug|debug-kpatch-exp>"
+case "${variant}" in
+    standard | kpatch-exp)
+        base_variant="${variant}"
+        ;;
+    # Debug packages carry the same images and AnyKernel3 configuration as
+    # their release counterparts; only the modules differ.
+    debug)
+        base_variant="standard"
+        ;;
+    debug-kpatch-exp)
+        base_variant="kpatch-exp"
+        ;;
+    *)
+        fail "unknown variant: ${variant}"
+        ;;
+esac
 [ -s "${zip_file}" ] || fail "${zip_file} is missing or empty"
 [ -s "${dist_dir}/Image" ] || fail "${dist_dir}/Image is missing or empty"
 unzip -tq "${zip_file}" || fail "ZIP integrity check failed: ${zip_file}"
@@ -43,9 +58,10 @@ require_config 'BLOCK=boot;'
 require_config 'IS_SLOT_DEVICE=1;'
 
 zip_image="$(mktemp)"
-trap 'rm -f "${zip_image}"' EXIT
+zip_list="$(mktemp)"
+trap 'rm -f "${zip_image}" "${zip_list}"' EXIT
 unzip -p "${zip_file}" Image > "${zip_image}"
-if [ "${variant}" = standard ]; then
+if [ "${base_variant}" = standard ]; then
     cmp -s "${zip_image}" "${dist_dir}/Image" || fail "standard ZIP Image differs from ${dist_dir}/Image"
     grep -Fq 'KPatch-Next EXP' <<< "${anykernel_config}" && fail "standard ZIP contains KPatch-Next label"
 else
@@ -64,11 +80,30 @@ fi
 # only when the staging directory happens to be populated.
 grep -Eq '^modules/.+\.ko$' <<< "${entries_text}" || fail "ZIP is missing kernel modules"
 
-expected_modules="$(find "${dist_dir}/modules" -type f -name '*.ko' 2>/dev/null | wc -l)"
-if [ "${expected_modules}" -gt 0 ]; then
-    zipped_modules="$(grep -Ec '^modules/.+\.ko$' <<< "${entries_text}")"
-    [ "${zipped_modules}" -eq "${expected_modules}" ] ||
-        fail "ZIP carries ${zipped_modules} modules, expected ${expected_modules}"
-fi
+# Compare every module inside the ZIP against the tree it was supposed to be
+# built from. MODULES_REF_DIR must point at a directory holding lib/modules/*
+# (out/modules_install_release for release zips, out/modules_install for debug
+# ones); the size match is what proves a debug ZIP really kept its debug info
+# and a release ZIP really dropped it.
+modules_ref_dir="${MODULES_REF_DIR:-${dist_dir}/modules}"
+ref_modules_dir="${modules_ref_dir}/lib/modules"
+[ -d "${ref_modules_dir}" ] || fail "reference module tree not found: ${ref_modules_dir}"
+
+unzip -l "${zip_file}" > "${zip_list}"
+zipped_module_count=0
+while read -r entry; do
+    rel_path="${entry#modules/}"
+    ref_file="${ref_modules_dir}/${rel_path}"
+    [ -f "${ref_file}" ] || fail "ZIP module ${entry} is not part of ${ref_modules_dir}"
+    zip_bytes="$(awk -v e="${entry}" '$4 == e { print $1; exit }' "${zip_list}")"
+    ref_bytes="$(stat -c %s "${ref_file}")"
+    [ "${zip_bytes}" = "${ref_bytes}" ] ||
+        fail "ZIP module ${entry} is ${zip_bytes} bytes, expected ${ref_bytes} from ${ref_modules_dir}"
+    zipped_module_count=$((zipped_module_count + 1))
+done < <(grep -E '^modules/.+\.ko$' <<< "${entries_text}")
+
+expected_module_count="$(find "${ref_modules_dir}" -type f -name '*.ko' | wc -l)"
+[ "${zipped_module_count}" -eq "${expected_module_count}" ] ||
+    fail "ZIP carries ${zipped_module_count} modules, expected ${expected_module_count}"
 
 echo "Verified ${variant}: ${zip_file}"

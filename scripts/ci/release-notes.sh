@@ -53,15 +53,19 @@ fi
 
 standard_zip="miro-kernel-ultra-${version}.zip"
 kpatch_zip="miro-kernel-ultra-kpatch-exp-${version}.zip"
-debug_archive="miro-kernel-ultra-debug-${version}.tar.zst"
+debug_zip="miro-kernel-ultra-debug-${version}.zip"
+kpatch_debug_zip="miro-kernel-ultra-kpatch-exp-debug-${version}.zip"
+debug_archive="miro-kernel-ultra-debug-symbols-${version}.tar.zst"
 
 read -r -d '' notes <<NOTES || true
 # miro-kernel-ultra ${version}
 
-Redmi K80 Pro（24122RKC7C / miro）Android 15 GKI 内核，同时提供标准版与 KPatch-Next 实验版两个刷机包。
+Redmi K80 Pro（24122RKC7C / miro）Android 15 GKI 内核。每个版本同时提供标准版与
+KPatch-Next 实验版，并各自提供 release（已剥离）与 debug（保留调试信息）两种刷机包。
 
-Android 15 GKI kernel for the Redmi K80 Pro (24122RKC7C / miro), published as a
-standard package and an experimental KPatch-Next package.
+Android 15 GKI kernel for the Redmi K80 Pro (24122RKC7C / miro). Every release
+ships a standard and an experimental KPatch-Next package, each in a release
+(stripped) and a debug (debug info kept) flavour.
 
 ## 本版变更 / Changes in this release
 
@@ -69,39 +73,71 @@ ${changes_section}
 
 ## 下载内容 / Release contents
 
+### 刷机包 / Flashable packages
+
 | 文件 / File | 说明 / Description |
 | --- | --- |
-| \`${standard_zip}\` | 标准版刷机包（boot 分区，A/B 插槽）/ Standard flashable package |
-| \`${kpatch_zip}\` | KPatch-Next 实验版刷机包 / Experimental KPatch-Next package |
-| \`${debug_archive}\` | 调试符号归档（未剥离模块 + \`vmlinux\` + \`System.map\`）/ Debug symbols archive (unstripped modules, \`vmlinux\`, \`System.map\`) |
-| \`SHA256SUMS-standard\` | 标准版校验和 / Checksums for the standard package |
-| \`SHA256SUMS-kpatch-exp\` | 实验版校验和 / Checksums for the experimental package |
-| \`SHA256SUMS-debug\` | 调试符号归档校验和 / Checksums for the debug symbols archive |
+| \`${standard_zip}\` | 标准版，日常使用 / Standard package, for daily use |
+| \`${kpatch_zip}\` | KPatch-Next 实验版 / Experimental KPatch-Next package |
+| \`${debug_zip}\` | 标准版 debug，模块保留调试信息 / Standard debug package, modules keep debug info |
+| \`${kpatch_debug_zip}\` | KPatch-Next 实验版 debug / Experimental KPatch-Next debug package |
 
-- 标准版集成 ReSukiSU 内核级 root 与 SUSFS 隐藏，适合日常使用。
-- kpatch-exp 版在标准版基础上嵌入 KPatch-Next KPM 运行时，属于实验构建。
-- 刷机包基于 AnyKernel3，包含内核 \`Image\`、\`dtb\`、\`dtbo.img\` 以及随内核一起编译的模块（模块通过 \`ak3-helper\` 模块投递，无需额外操作）。刷机包内的模块已剥离调试符号以控制体积。
-- 调试符号归档用于在崩溃后将地址还原为函数名：\`vmlinux\` 用于 \`addr2line\`，\`System.map\` 用于符号查表，未剥离模块用于 \`objdump\`。平时无需下载。
+四个刷机包的内核 \`Image\` 与 AnyKernel3 配置完全相同，区别只在
+随包的模块：release 包的模块已用 \`llvm-strip\` 剥离调试信息（体积小），debug 包的模块
+保留完整调试信息，可直接 \`objdump\` 定位崩溃点。**只刷机请用 release 包**；debug 包体积
+明显更大，仅在排查问题时使用。
 
-- The standard package ships ReSukiSU root management plus SUSFS hiding and is
-  the one to use day to day.
-- The kpatch-exp package additionally embeds the KPatch-Next KPM runtime and is
-  experimental.
-- Both ZIPs are AnyKernel3 packages carrying the kernel \`Image\`, the \`dtb\`, the
-  \`dtbo.img\` and every module built alongside the kernel. Modules are delivered
-  through the \`ak3-helper\` module, no manual step required. Modules inside the
-  ZIP are stripped of debug info to keep the package small.
-- The debug symbols archive lets a crash address be resolved back to a function
-  name: \`vmlinux\` for \`addr2line\`, \`System.map\` for symbol lookup and the
-  unstripped modules for \`objdump\`. You do not need it for a normal flash.
+All four packages carry the exact same kernel \`Image\` and AnyKernel3
+configuration. They differ only in the modules they ship: the release
+packages carry modules stripped with \`llvm-strip\` (small), while the debug
+packages keep full debug info so a crash can be pinpointed with \`objdump\`.
+**Use the release packages for normal flashing**; the debug ones are much larger
+and only useful when debugging.
+
+### 内核镜像 / Raw kernel images
+
+| 文件 / File | 说明 / Description |
+| --- | --- |
+| \`Image\` | 标准版内核镜像，供 fastboot 手动刷写或自行打包 / Raw standard kernel image for fastboot or custom repacking |
+| \`Image-kpatch-next-exp\` | 已嵌入 KPatch-Next 的内核镜像 / Kernel image with KPatch-Next embedded |
+
+### 调试符号 / Debug symbols
+
+| 文件 / File | 说明 / Description |
+| --- | --- |
+| \`${debug_archive}\` | 调试符号归档，内含未剥离的模块、\`vmlinux\`、\`System.map\`、\`vmlinux.symvers\`、\`.config\` / Debug symbols archive with unstripped modules, \`vmlinux\`, \`System.map\`, \`vmlinux.symvers\` and \`.config\` |
+| \`System.map\` | 内核符号表，用于把地址翻译成符号名 / Kernel symbol table for address to symbol lookup |
+| \`vmlinux.symvers\` | 内核模块符号 CRC，编译外部模块时需要 / Module symbol CRCs, needed to build out-of-tree modules |
+
+调试符号用于在崩溃后把地址还原成函数名：\`vmlinux\` 供 \`addr2line\`，
+\`System.map\` 供符号查表，未剥离的模块供 \`objdump\`。日常刷机不需要下载。
+
+These let a crash address be resolved back to a function name: \`vmlinux\` for
+\`addr2line\`, \`System.map\` for symbol lookup and the unstripped modules for
+\`objdump\`. You do not need them for a normal flash.
+
+### 校验和 / Checksums
+
+| 文件 / File | 覆盖的文件 / Covers |
+| --- | --- |
+| \`SHA256SUMS-standard\` | \`${standard_zip}\`、\`Image\` |
+| \`SHA256SUMS-kpatch-exp\` | \`${kpatch_zip}\`、\`Image-kpatch-next-exp\` |
+| \`SHA256SUMS-debug\` | \`${debug_zip}\` |
+| \`SHA256SUMS-debug-kpatch-exp\` | \`${kpatch_debug_zip}\` |
+| \`SHA256SUMS-debug-symbols\` | \`${debug_archive}\`、\`System.map\`、\`vmlinux.symvers\` |
 
 ## 刷入方法 / Installation
 
 ### 使用 KernelFlasher / Using KernelFlasher
 
-1. 下载对应版本的 zip 压缩包 / Download the ZIP you want.
-2. 使用 KernelFlasher 刷入到 boot 分区 / Flash it to the boot partition.
+1. 下载想要刷入的 zip 压缩包（建议 release 标准版） / Download the ZIP you want (the release standard package is the recommended default).
+2. 使用 KernelFlasher 刷入 boot 分区 / Flash it to the boot partition.
 3. 重启即可 / Reboot.
+
+刷机包基于 AnyKernel3，模块通过 \`ak3-helper\` 模块随刷入一起投递，无需额外操作。
+
+The packages are AnyKernel3 ZIPs; modules are delivered automatically through the
+\`ak3-helper\` module, no manual step required.
 
 刷入前请务必备份当前 boot 镜像；首次刷入 KPatch 实验版建议保留可回退的原厂镜像。
 
@@ -113,9 +149,11 @@ experimental KPatch package, keep a known good image you can roll back to.
 Release assets are accompanied by SHA256 checksums; verify before flashing:
 
 \`\`\`bash
-sha256sum -c SHA256SUMS-standard      # 标准版 / standard
-sha256sum -c SHA256SUMS-kpatch-exp    # 实验版 / experimental
-sha256sum -c SHA256SUMS-debug         # 调试符号 / debug symbols
+sha256sum -c SHA256SUMS-standard          # 标准版内核与镜像 / standard kernel + Image
+sha256sum -c SHA256SUMS-kpatch-exp        # 实验版内核与镜像 / experimental kernel + Image
+sha256sum -c SHA256SUMS-debug             # 标准版 debug 刷机包 / standard debug package
+sha256sum -c SHA256SUMS-debug-kpatch-exp  # 实验版 debug 刷机包 / experimental debug package
+sha256sum -c SHA256SUMS-debug-symbols     # 调试符号归档 / debug symbols archive
 \`\`\`
 
 ## 设备检测 / Device check
@@ -126,11 +164,15 @@ sha256sum -c SHA256SUMS-debug         # 调试符号 / debug symbols
 
 ## 发布前验证 / Pre-release verification
 
-每个版本发布前都会在 CI 中完成以下检查：完整构建、产物校验（ZIP 结构与模块完整性）、以及在 QEMU 中真实启动该内核并确认进入用户态。
+每个版本发布前都会在 CI 中完成以下检查：完整构建、四个刷机包的产物校验（ZIP 结构、
+镜像一致性、模块逐个字节比对以确认 debug 包确实保留、release 包确实剥离调试信息），
+以及在 QEMU 中真实启动该内核并确认进入用户态。
 
-Every release is gated in CI by a full build, artifact verification (ZIP layout
-and module completeness) and a real boot of the produced kernel under QEMU that
-has to reach userspace.
+Every release is gated in CI by a full build, artifact verification of all four
+packages (ZIP layout, image consistency and a per-module byte comparison that
+proves the debug packages kept and the release packages dropped their debug
+info) and a real boot of the produced kernel under QEMU that has to reach
+userspace.
 NOTES
 
 if [ -n "${out_file}" ]; then
