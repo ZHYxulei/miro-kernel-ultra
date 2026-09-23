@@ -8,5 +8,5 @@
 	ignore = untracked
 [submodule "KPatch-Next"]
 	path = KPatch-Next
-	url = https://github.com/741afb7/KPatch-Next-EXP.git
+	url = https://github.com/ZHYxulei/KPatch-Next-EXP.git
 	ignore = untracked

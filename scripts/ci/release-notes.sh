@@ -56,6 +56,7 @@ kpatch_zip="miro-kernel-ultra-kpatch-exp-${version}.zip"
 debug_zip="miro-kernel-ultra-debug-${version}.zip"
 kpatch_debug_zip="miro-kernel-ultra-kpatch-exp-debug-${version}.zip"
 debug_archive="miro-kernel-ultra-debug-symbols-${version}.tar.zst"
+debug_kernel_archive="miro-kernel-ultra-debug-kernel-symbols-${version}.tar.zst"
 
 read -r -d '' notes <<NOTES || true
 # miro-kernel-ultra ${version}
@@ -82,17 +83,19 @@ ${changes_section}
 | \`${debug_zip}\` | 标准版 debug，模块保留调试信息 / Standard debug package, modules keep debug info |
 | \`${kpatch_debug_zip}\` | KPatch-Next 实验版 debug / Experimental KPatch-Next debug package |
 
-四个刷机包的内核 \`Image\` 与 AnyKernel3 配置完全相同，区别只在
-随包的模块：release 包的模块已用 \`llvm-strip\` 剥离调试信息（体积小），debug 包的模块
-保留完整调试信息，可直接 \`objdump\` 定位崩溃点。**只刷机请用 release 包**；debug 包体积
-明显更大，仅在排查问题时使用。
+release 与 debug 是两个独立编译产物，使用同一份 \`.config\` 与 AnyKernel3 配置：debug 版
+内核版本串带 \`-debug\` 后缀（\`uname -r\` 形如 \`6.6.30-4k-ZHYxulei-debug-g<sha>\`，release 版
+无该后缀），其模块保留完整调试信息，可直接 \`objdump\` 定位崩溃点；release 包的模块已用
+\`llvm-strip\` 剥离调试信息（体积小）。**只刷机请用 release 包**；debug 包体积明显更大，
+仅在排查问题时使用。
 
-All four packages carry the exact same kernel \`Image\` and AnyKernel3
-configuration. They differ only in the modules they ship: the release
-packages carry modules stripped with \`llvm-strip\` (small), while the debug
-packages keep full debug info so a crash can be pinpointed with \`objdump\`.
-**Use the release packages for normal flashing**; the debug ones are much larger
-and only useful when debugging.
+release and debug are two separate builds from the same \`.config\` and AnyKernel3
+configuration: the debug kernel reports a release string carrying the \`-debug\` suffix
+(\`uname -r\` looks like \`6.6.30-4k-ZHYxulei-debug-g<sha>\`, the release one has no suffix)
+and its modules keep full debug info so a crash can be pinpointed with \`objdump\`, while the
+release packages carry modules stripped with \`llvm-strip\` (small). **Use the release
+packages for normal flashing**; the debug ones are much larger and only useful when
+debugging.
 
 ### 内核镜像 / Raw kernel images
 
@@ -105,16 +108,19 @@ and only useful when debugging.
 
 | 文件 / File | 说明 / Description |
 | --- | --- |
-| \`${debug_archive}\` | 调试符号归档，内含未剥离的模块、\`vmlinux\`、\`System.map\`、\`vmlinux.symvers\`、\`.config\` / Debug symbols archive with unstripped modules, \`vmlinux\`, \`System.map\`, \`vmlinux.symvers\` and \`.config\` |
-| \`System.map\` | 内核符号表，用于把地址翻译成符号名 / Kernel symbol table for address to symbol lookup |
-| \`vmlinux.symvers\` | 内核模块符号 CRC，编译外部模块时需要 / Module symbol CRCs, needed to build out-of-tree modules |
+| \`${debug_archive}\` | release 内核的调试符号归档，内含未剥离的模块、\`vmlinux\`、\`System.map\`、\`vmlinux.symvers\`、\`.config\` / Debug symbols for the release kernel: unstripped modules, \`vmlinux\`, \`System.map\`, \`vmlinux.symvers\` and \`.config\` |
+| \`${debug_kernel_archive}\` | debug 内核自己的调试符号归档，用法同上。debug 内核是独立编译产物，地址与 release 内核不同，不能混用 / The debug kernel's own symbol archive, used the same way. It is a separate build, so its addresses do not match the release kernel |
+| \`System.map\` | release 内核的符号表，用于把地址翻译成符号名 / Release kernel symbol table for address to symbol lookup |
+| \`vmlinux.symvers\` | release 内核的模块符号 CRC，编译外部模块时需要 / Release kernel module symbol CRCs, needed to build out-of-tree modules |
 
 调试符号用于在崩溃后把地址还原成函数名：\`vmlinux\` 供 \`addr2line\`，
-\`System.map\` 供符号查表，未剥离的模块供 \`objdump\`。日常刷机不需要下载。
+\`System.map\` 供符号查表，未剥离的模块供 \`objdump\`。请按设备上 \`uname -r\` 是否带
+\`-debug\` 选择对应的一份。日常刷机不需要下载。
 
 These let a crash address be resolved back to a function name: \`vmlinux\` for
 \`addr2line\`, \`System.map\` for symbol lookup and the unstripped modules for
-\`objdump\`. You do not need them for a normal flash.
+\`objdump\`. Pick the archive that matches the kernel on the device (\`uname -r\`
+carries \`-debug\` for the debug one). You do not need them for a normal flash.
 
 ### 校验和 / Checksums
 
@@ -125,6 +131,7 @@ These let a crash address be resolved back to a function name: \`vmlinux\` for
 | \`SHA256SUMS-debug\` | \`${debug_zip}\` |
 | \`SHA256SUMS-debug-kpatch-exp\` | \`${kpatch_debug_zip}\` |
 | \`SHA256SUMS-debug-symbols\` | \`${debug_archive}\`、\`System.map\`、\`vmlinux.symvers\` |
+| \`SHA256SUMS-debug-kernel-symbols\` | \`${debug_kernel_archive}\` |
 
 ## 刷入方法 / Installation
 
@@ -154,6 +161,7 @@ sha256sum -c SHA256SUMS-kpatch-exp        # 实验版内核与镜像 / experimen
 sha256sum -c SHA256SUMS-debug             # 标准版 debug 刷机包 / standard debug package
 sha256sum -c SHA256SUMS-debug-kpatch-exp  # 实验版 debug 刷机包 / experimental debug package
 sha256sum -c SHA256SUMS-debug-symbols     # 调试符号归档 / debug symbols archive
+sha256sum -c SHA256SUMS-debug-kernel-symbols  # debug 内核的调试符号归档 / symbols of the debug kernel
 \`\`\`
 
 ## 设备检测 / Device check

@@ -37,6 +37,10 @@
 #   USE_CCACHE        Set to 1 to enable ccache (default: auto-detect)
 #   CCACHE_DIR        Override ccache directory (default: ~/.ccache)
 #   FAST_BUILD        Set to 1 to skip modules and only build Image+dtbs
+#   LOCALVERSION      Extra kernel release suffix, e.g. LOCALVERSION=-debug.
+#                     Appended after CONFIG_LOCALVERSION (see setlocalversion),
+#                     so a debug build reports a distinct `uname -r` while using
+#                     the exact same .config as the release build.
 #   KPATCH_TARGET_COMPILE  KPatch ARM64 bare-metal toolchain prefix (auto-download if unset)
 #
 # AnyKernel3 configuration (optional):
@@ -70,6 +74,12 @@ OUT_DIR="${OUT_DIR:-out}"
 OUT_DIR="$(realpath -m "${OUT_DIR}")"
 DIST_DIR="${OUT_DIR}/dist"
 JOBS="${JOBS:-$(nproc --all)}"
+
+# Extra kernel release suffix, using the kernel's own LOCALVERSION make variable.
+# scripts/setlocalversion appends it right after CONFIG_LOCALVERSION, so
+# `LOCALVERSION=-debug` turns 6.6.30-4k-ZHYxulei-g<sha> into
+# 6.6.30-4k-ZHYxulei-debug-g<sha> without touching .config.
+LOCALVERSION="${LOCALVERSION:-}"
 
 # ============================================================
 # Toolchain configuration
@@ -153,6 +163,12 @@ MAKE_ARGS=(
     O=${OUT_DIR}
     -j${JOBS}
 )
+
+# Hand the release suffix to make as a command-line variable; make exports those
+# to the recipes that run scripts/setlocalversion.
+if [ -n "${LOCALVERSION}" ]; then
+    MAKE_ARGS+=(LOCALVERSION=${LOCALVERSION})
+fi
 
 # Defconfig fragments (merged in order)
 CONFIG_DIR=arch/${ARCH}/configs
@@ -549,6 +565,21 @@ build_kernel() {
         error "Full log: ${ERROR_LOG}"
         exit 1
     fi
+
+    # A release suffix that silently fails to reach the version string is
+    # invisible until someone compares `uname -r` on a device, so check it here.
+    local kernel_release
+    kernel_release="$(cat "${OUT_DIR}/include/config/kernel.release" 2>/dev/null || true)"
+    if [ -n "${LOCALVERSION}" ]; then
+        case "${kernel_release}" in
+            *"${LOCALVERSION}"*) ;;
+            *)
+                error "Kernel release '${kernel_release}' is missing LOCALVERSION '${LOCALVERSION}'"
+                exit 1
+                ;;
+        esac
+    fi
+    log "Kernel release: ${kernel_release}"
 
     log "Kernel build completed in $(elapsed)"
 }

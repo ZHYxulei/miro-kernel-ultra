@@ -18,12 +18,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The kernel is compiled exactly once. The two packaging jobs below turn the
-  # same build into the release pair and the debug pair in parallel, so shipping
-  # the debug packages costs no extra compilation time.
+  # The kernel is compiled twice: once as the release build and once with
+  # LOCALVERSION=-debug. The suffix ends up in the module vermagic, so it cannot
+  # be applied after the fact -- the debug build needs its own Image *and* its own
+  # modules. The two packaging jobs below turn each build into its flashable pair
+  # in parallel.
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     permissions:
       contents: read
     env:
@@ -71,6 +73,7 @@ jobs:
           echo "debug_zip=miro-kernel-ultra-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
           echo "kpatch_debug_zip=miro-kernel-ultra-kpatch-exp-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
           echo "symbols_archive=miro-kernel-ultra-debug-symbols-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
+          echo "symbols_archive_debug=miro-kernel-ultra-debug-kernel-symbols-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/cache@v4
         with:
@@ -86,11 +89,29 @@ jobs:
           path: out/kpatch-toolchain
           key: kpatch-toolchain-12.2.rel1
 
-      - name: Build kernel
+      # Both kernels come out of the same tree and .config and differ only in the
+      # version suffix, but a debug kernel's `vmlinux` and modules carry their own
+      # addresses, so each build publishes its own symbol archive.
+      - name: Build kernel (release)
         env:
           DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive }}
         run: |
           chmod +x build.sh scripts/ci/verify-artifacts.sh scripts/ci/smoke-boot-test.sh
+          JOBS="$(nproc)" bash build.sh all
+          JOBS="$(nproc)" bash build.sh kpatch
+
+      # Same tree, same .config, only the release suffix differs: the debug
+      # kernel reports `6.6.30-4k-ZHYxulei-debug-g<sha>` from `uname -r` and
+      # therefore needs its own module vermagic as well.
+      # KPATCH_TOOLCHAIN_DIR points back at the cached release toolchain, so the
+      # second build does not download (and cache-miss) another copy.
+      - name: Build kernel (debug)
+        env:
+          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive_debug }}
+          OUT_DIR: out-debug
+          LOCALVERSION: -debug
+          KPATCH_TOOLCHAIN_DIR: out/kpatch-toolchain
+        run: |
           JOBS="$(nproc)" bash build.sh all
           JOBS="$(nproc)" bash build.sh kpatch
 
@@ -101,22 +122,33 @@ jobs:
       - name: Stage kernel outputs for packaging
         run: |
           rm -rf ci-kernel
-          mkdir -p ci-kernel/out/dist ci-kernel/out/arch/arm64/boot ci-kernel/KPatch-Next/tools
-          for file in Image Image-kpatch-next-exp dtb dtbo.img; do
-            if [ -f "out/dist/${file}" ]; then
-              cp -f "out/dist/${file}" ci-kernel/out/dist/
-            fi
-          done
-          # Image stays in the arch/arm64/boot layout too, because build.sh reads
-          # the standard image from there (KERNEL_IMAGE) and only the KPatch one
-          # from out/dist (KPATCHED_IMAGE).
-          for file in Image dtbo.img dtb; do
-            if [ -f "out/arch/arm64/boot/${file}" ]; then
-              cp -f "out/arch/arm64/boot/${file}" ci-kernel/out/arch/arm64/boot/
-            fi
-          done
-          cp -r out/modules_install ci-kernel/out/modules_install
-          cp -r out/modules_install_release ci-kernel/out/modules_install_release
+          mkdir -p ci-kernel/KPatch-Next/tools
+          # stage_tree <build dir> <destination> <module tree>...
+          stage_tree() {
+            local src="$1" dest="$2"
+            shift 2
+            mkdir -p "${dest}/dist" "${dest}/arch/arm64/boot"
+            for file in Image Image-kpatch-next-exp dtb dtbo.img; do
+              if [ -f "${src}/dist/${file}" ]; then
+                cp -f "${src}/dist/${file}" "${dest}/dist/"
+              fi
+            done
+            # Image stays in the arch/arm64/boot layout too, because build.sh reads
+            # the standard image from there (KERNEL_IMAGE) and only the KPatch one
+            # from out/dist (KPATCHED_IMAGE).
+            for file in Image dtbo.img dtb; do
+              if [ -f "${src}/arch/arm64/boot/${file}" ]; then
+                cp -f "${src}/arch/arm64/boot/${file}" "${dest}/arch/arm64/boot/"
+              fi
+            done
+            local tree
+            for tree in "$@"; do
+              cp -r "${src}/${tree}" "${dest}/${tree}"
+            done
+          }
+          stage_tree out ci-kernel/out modules_install modules_install_release
+          # The debug packaging job only needs the unstripped tree it ships.
+          stage_tree out-debug ci-kernel/out-debug modules_install
           cp -f KPatch-Next/tools/kptools ci-kernel/KPatch-Next/tools/
 
       - name: Upload kernel outputs
@@ -127,9 +159,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Symbol archive and the raw build metadata. `vmlinux` is deliberately not
-      # uploaded on its own: it is inside the symbol archive already.
-      - name: Stage debug symbols archive
+      # Both symbol archives plus the release build's raw metadata. `vmlinux` is
+      # deliberately not uploaded on its own: it is inside the archives already.
+      # The two archives stay flat in one directory because their names differ,
+      # and the bare filenames in each SHA256SUMS keep `sha256sum -c` working
+      # straight from the download directory on any platform.
+      - name: Stage debug symbols archives
         run: |
           rm -rf ci-symbols
           mkdir -p ci-symbols
@@ -139,8 +174,6 @@ jobs:
               cp -f "out/dist/${file}" ci-symbols/
             fi
           done
-          # Bare filenames, so `sha256sum -c SHA256SUMS-debug-symbols` works
-          # straight from the download directory on any platform.
           sums_files=("${DEBUG_SYMBOLS_ARCHIVE}")
           for file in System.map vmlinux.symvers; do
             if [ -f "ci-symbols/${file}" ]; then
@@ -148,10 +181,14 @@ jobs:
             fi
           done
           ( cd ci-symbols && sha256sum "${sums_files[@]}" > SHA256SUMS-debug-symbols )
+
+          cp -f "out-debug/dist/${DEBUG_SYMBOLS_ARCHIVE_DEBUG}" ci-symbols/
+          ( cd ci-symbols && sha256sum "${DEBUG_SYMBOLS_ARCHIVE_DEBUG}" > SHA256SUMS-debug-kernel-symbols )
         env:
           DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive }}
+          DEBUG_SYMBOLS_ARCHIVE_DEBUG: ${{ steps.build-id.outputs.symbols_archive_debug }}
 
-      - name: Upload debug symbols archive
+      - name: Upload debug symbols archives
         uses: actions/upload-artifact@v4
         with:
           name: miro-kernel-ultra-symbols-${{ github.run_id }}
@@ -245,8 +282,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Debug pair: identical images and AnyKernel3 config, modules keep their debug
-  # info so a crash address can be resolved with objdump.
+  # Debug pair: same AnyKernel3 config, but the Image carries the -debug release
+  # suffix and the modules keep their debug info so a crash address can be
+  # resolved with objdump.
   package-debug:
     needs: build
     runs-on: ubuntu-24.04
@@ -256,7 +294,7 @@ jobs:
     env:
       ANYKERNEL3_DEBUG_ZIP: ${{ needs.build.outputs.debug_zip }}
       ANYKERNEL3_KPATCH_DEBUG_ZIP: ${{ needs.build.outputs.kpatch_debug_zip }}
-      MODULES_REF_DIR: ci-kernel/out/modules_install
+      MODULES_REF_DIR: ci-kernel/out-debug/modules_install
       KPATCH_TOOLS: ci-kernel/KPatch-Next/tools/kptools
     steps:
       - uses: actions/checkout@v4
@@ -278,15 +316,15 @@ jobs:
         run: |
           chmod +x build.sh scripts/ci/verify-artifacts.sh
           chmod +x ci-kernel/KPatch-Next/tools/kptools
-          OUT_DIR=ci-kernel/out bash build.sh package-debug
-          scripts/ci/verify-artifacts.sh "ci-kernel/out/dist/${ANYKERNEL3_DEBUG_ZIP}" debug
-          scripts/ci/verify-artifacts.sh "ci-kernel/out/dist/${ANYKERNEL3_KPATCH_DEBUG_ZIP}" debug-kpatch-exp
+          OUT_DIR=ci-kernel/out-debug bash build.sh package-debug
+          scripts/ci/verify-artifacts.sh "ci-kernel/out-debug/dist/${ANYKERNEL3_DEBUG_ZIP}" debug
+          scripts/ci/verify-artifacts.sh "ci-kernel/out-debug/dist/${ANYKERNEL3_KPATCH_DEBUG_ZIP}" debug-kpatch-exp
 
       - name: Stage debug artifacts
         run: |
           rm -rf ci-debug
           mkdir -p ci-debug
-          cp -f "ci-kernel/out/dist/${ANYKERNEL3_DEBUG_ZIP}" "ci-kernel/out/dist/${ANYKERNEL3_KPATCH_DEBUG_ZIP}" ci-debug/
+          cp -f "ci-kernel/out-debug/dist/${ANYKERNEL3_DEBUG_ZIP}" "ci-kernel/out-debug/dist/${ANYKERNEL3_KPATCH_DEBUG_ZIP}" ci-debug/
           ( cd ci-debug && sha256sum "${ANYKERNEL3_DEBUG_ZIP}" > SHA256SUMS-debug )
           ( cd ci-debug && sha256sum "${ANYKERNEL3_KPATCH_DEBUG_ZIP}" > SHA256SUMS-debug-kpatch-exp )
 
@@ -392,6 +430,7 @@ jobs:
             release-assets/debug/SHA256SUMS-debug
             release-assets/debug/SHA256SUMS-debug-kpatch-exp
             release-assets/symbols/SHA256SUMS-debug-symbols
+            release-assets/symbols/SHA256SUMS-debug-kernel-symbols
           )
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber --repo "${GITHUB_REPOSITORY}"

@@ -347,6 +347,7 @@ defconfig 片段：
 | `USE_CCACHE` | 自动检测 | 设为 `1` 启用 ccache，`0` 禁用 |
 | `CCACHE_DIR` | `~/.ccache` | ccache 缓存目录 |
 | `FAST_BUILD` | 未设置 | 设为 `1` 跳过模块编译，仅编译 Image + dtbs |
+| `LOCALVERSION` | 未设置 | 追加到内核版本串末尾的后缀（如 `-debug`），用于区分同一份 `.config` 编译出的不同内核 |
 | `KPATCH_TARGET_COMPILE` | 自动下载 | KPatch-Next `kpimg` 使用的 ARM64 bare-metal 工具链前缀（默认自动下载 Arm GNU 12.2 `aarch64-none-elf-`） |
 
 使用示例：

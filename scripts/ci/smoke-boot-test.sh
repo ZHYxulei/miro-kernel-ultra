@@ -168,6 +168,7 @@ boot_image() {
     local image="$1"
     local guest_log="$2"
     local qemu_status
+    local image_name guest_release
 
     log "Booting ${image} under QEMU (timeout ${timeout_secs}s)"
     set +e
@@ -222,6 +223,34 @@ boot_image() {
         printf 'Smoke boot test failed: %s init did not complete\n' "${image}" >&2
         return 1
     fi
+
+    # A debug kernel differs from its release counterpart by nothing but the
+    # LOCALVERSION suffix, and that suffix is what module vermagic is derived
+    # from. If it silently stops being applied the packages would still boot, so
+    # check the release string reported by the guest itself.
+    image_name="$(basename "${image}")"
+    guest_release="$(sed -n 's/^SMOKE-BOOT: uname -r = //p' "${guest_log}" | head -n1)"
+    if [ -z "${guest_release}" ]; then
+        dump_tail "${guest_log}"
+        printf 'Smoke boot test failed: %s did not report its kernel release\n' "${image}" >&2
+        return 1
+    fi
+    case "${image_name}" in
+        *-debug-*)
+            if [[ "${guest_release}" != *-debug* ]]; then
+                printf 'Smoke boot test failed: %s is a debug image but reports uname -r = %s\n' \
+                    "${image}" "${guest_release}" >&2
+                return 1
+            fi
+            ;;
+        *)
+            if [[ "${guest_release}" == *-debug* ]]; then
+                printf 'Smoke boot test failed: %s is a release image but reports uname -r = %s\n' \
+                    "${image}" "${guest_release}" >&2
+                return 1
+            fi
+            ;;
+    esac
 
     log "Boot log (${image}):"
     grep -E 'Linux version|SMOKE-BOOT' "${guest_log}" | sed 's/^/    /'
