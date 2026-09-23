@@ -695,19 +695,10 @@ build_kpatch_tools() {
     make -C "${KPATCH_NEXT_DIR}/kernel" clean
     make -C "${KPATCH_NEXT_DIR}/tools" clean
     make -C "${KPATCH_NEXT_DIR}/kernel" TARGET_COMPILE="${KPATCH_TARGET_COMPILE}" hdr kpimg
-    if [ -f "${KPATCH_NEXT_DIR}/kernel/base/sha256.c" ]; then
-        cp -f "${KPATCH_NEXT_DIR}/kernel/base/sha256.c" "${KPATCH_NEXT_DIR}/tools/sha256.c"
-        sed 's/#include <ktypes.h>/#include <stdint.h>\n#include <stddef.h>/' \
-            "${KPATCH_NEXT_DIR}/kernel/include/sha256.h" \
-            > "${KPATCH_NEXT_DIR}/tools/sha256.h"
-        log "  Prepared sha256 source for the userspace tools build"
-    fi
     if ! make -C "${KPATCH_NEXT_DIR}/tools"; then
-        rm -f "${KPATCH_NEXT_DIR}/tools/sha256.c" "${KPATCH_NEXT_DIR}/tools/sha256.h"
         error "Failed to build KPatch-Next userspace tools."
         exit 1
     fi
-    rm -f "${KPATCH_NEXT_DIR}/tools/sha256.c" "${KPATCH_NEXT_DIR}/tools/sha256.h"
     [ -s "${KPATCH_KPIMG}" ] || { error "KPatch kpimg was not generated."; exit 1; }
     [ -x "${KPATCH_TOOLS}" ] || { error "KPatch kptools was not generated."; exit 1; }
     log "KPatch-Next version: $("${KPATCH_TOOLS}" -v -k "${KPATCH_KPIMG}")"
