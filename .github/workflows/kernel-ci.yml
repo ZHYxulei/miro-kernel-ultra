@@ -298,10 +298,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Runs after both packaging jobs, because the Image that actually ends up on
+  # the device is the one inside a ZIP, not the build-tree copy. Every published
+  # package is unpacked and booted on its own, so a broken release package and a
+  # broken debug package are told apart instead of hiding behind one another.
   smoke-test:
-    needs: build
+    needs: [package-release, package-debug]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -312,17 +316,30 @@ jobs:
       - name: Install QEMU and cross compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm clang lld cpio
+          sudo apt-get install -y qemu-system-arm clang lld cpio unzip
 
       - uses: actions/download-artifact@v4
         with:
-          name: miro-kernel-ultra-kernel-${{ github.run_id }}
-          path: ci-kernel
+          name: miro-kernel-ultra-release-${{ github.run_id }}
+          path: smoke-release
 
-      - name: Boot the produced kernel under QEMU
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-debug-${{ github.run_id }}
+          path: smoke-debug
+
+      - name: Boot the Image inside every published package
         run: |
           chmod +x scripts/ci/smoke-boot-test.sh
-          scripts/ci/smoke-boot-test.sh ci-kernel/out/dist/Image
+          rm -rf smoke-images
+          mkdir -p smoke-images
+          for zip in smoke-release/*.zip smoke-debug/*.zip; do
+            name="$(basename "${zip}" .zip)"
+            unzip -p "${zip}" Image > "smoke-images/${name}.Image"
+            test -s "smoke-images/${name}.Image"
+          done
+          ls -l smoke-images
+          scripts/ci/smoke-boot-test.sh smoke-images/*.Image
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
