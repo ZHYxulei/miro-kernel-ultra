@@ -24,6 +24,14 @@ jobs:
   preflight:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      build_id: ${{ steps.build-id.outputs.build_id }}
+      standard_zip: ${{ steps.build-id.outputs.standard_zip }}
+      kpatch_zip: ${{ steps.build-id.outputs.kpatch_zip }}
+      debug_zip: ${{ steps.build-id.outputs.debug_zip }}
+      kpatch_debug_zip: ${{ steps.build-id.outputs.kpatch_debug_zip }}
+      symbols_archive: ${{ steps.build-id.outputs.symbols_archive }}
+      symbols_archive_debug: ${{ steps.build-id.outputs.symbols_archive_debug }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,13 +40,27 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: Script syntax, YAML and offline tests
         run: python3 -I scripts/ci/check-ci.py
+      # 两个 runner 共用一次生成的标识，避免跨 UTC 日期时文件名不一致。
+      - name: Resolve build id
+        id: build-id
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            build_id="${GITHUB_REF_NAME}"
+          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            build_id="nightly-$(date -u +%Y%m%d)"
+          else
+            build_id="${GITHUB_SHA}"
+          fi
+          echo "build_id=${build_id}" >> "${GITHUB_OUTPUT}"
+          echo "standard_zip=miro-kernel-ultra-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "kpatch_zip=miro-kernel-ultra-kpatch-exp-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "debug_zip=miro-kernel-ultra-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "kpatch_debug_zip=miro-kernel-ultra-kpatch-exp-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
+          echo "symbols_archive=miro-kernel-ultra-debug-symbols-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
+          echo "symbols_archive_debug=miro-kernel-ultra-debug-kernel-symbols-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
 
-  # The kernel is compiled twice: once as the release build and once with
-  # LOCALVERSION=-debug. The suffix ends up in the module vermagic, so it cannot
-  # be applied after the fact -- the debug build needs its own Image *and* its own
-  # modules. The two packaging jobs below turn each build into its flashable pair
-  # in parallel.
-  build:
+  # 独立 runner 并行编译；版本后缀在编译时写入模块 vermagic，不能事后修改。
+  build-release:
     needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 240
@@ -49,13 +71,17 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       KBUILD_BUILD_USER: github-actions
       KBUILD_BUILD_HOST: github
+      BUILD_VARIANT: release
+      OUT_DIR: out
+      LOCALVERSION: ""
+      MODULES_TREE: modules_install_release
+      KPATCH_TOOLCHAIN_DIR: out/kpatch-toolchain
+      DEBUG_SYMBOLS_ARCHIVE: ${{ needs.preflight.outputs.symbols_archive }}
     outputs:
-      standard_zip: ${{ steps.build-id.outputs.standard_zip }}
-      kpatch_zip: ${{ steps.build-id.outputs.kpatch_zip }}
-      debug_zip: ${{ steps.build-id.outputs.debug_zip }}
-      kpatch_debug_zip: ${{ steps.build-id.outputs.kpatch_debug_zip }}
-      symbols_archive: ${{ steps.build-id.outputs.symbols_archive }}
-    steps:
+      standard_zip: ${{ needs.preflight.outputs.standard_zip }}
+      kpatch_zip: ${{ needs.preflight.outputs.kpatch_zip }}
+    # 仅复用步骤定义；执行环境、缓存、产物仍属于各自独立的 job。
+    steps: &build-steps
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -83,35 +109,18 @@ jobs:
           done
           git submodule status --recursive
           test -e KernelSU/.git && test -e AnyKernel3/.git && test -e KPatch-Next/.git
-          mkdir -p out out-debug
+          mkdir -p "${OUT_DIR}"
           df -h .
           free -h
 
-      - name: Resolve build id
-        id: build-id
-        run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            build_id="${GITHUB_REF_NAME}"
-          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
-            build_id="nightly-$(date -u +%Y%m%d)"
-          else
-            build_id="${GITHUB_SHA}"
-          fi
-          echo "build_id=${build_id}" >> "${GITHUB_OUTPUT}"
-          echo "standard_zip=miro-kernel-ultra-${build_id}.zip" >> "${GITHUB_OUTPUT}"
-          echo "kpatch_zip=miro-kernel-ultra-kpatch-exp-${build_id}.zip" >> "${GITHUB_OUTPUT}"
-          echo "debug_zip=miro-kernel-ultra-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
-          echo "kpatch_debug_zip=miro-kernel-ultra-kpatch-exp-debug-${build_id}.zip" >> "${GITHUB_OUTPUT}"
-          echo "symbols_archive=miro-kernel-ultra-debug-symbols-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
-          echo "symbols_archive_debug=miro-kernel-ultra-debug-kernel-symbols-${build_id}.tar.zst" >> "${GITHUB_OUTPUT}"
-
+      # 分 variant 保存及恢复 ccache，避免两个 runner 并发写入同一 key。
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/gki_defconfig', 'arch/arm64/configs/vendor/*.config', 'arch/arm64/configs/droidspaces.fragment') }}-${{ github.sha }}
+          key: ccache-${{ env.BUILD_VARIANT }}-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/gki_defconfig', 'arch/arm64/configs/vendor/*.config', 'arch/arm64/configs/droidspaces.fragment') }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/gki_defconfig', 'arch/arm64/configs/vendor/*.config', 'arch/arm64/configs/droidspaces.fragment') }}-
-            ccache-${{ runner.os }}-
+            ccache-${{ env.BUILD_VARIANT }}-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/gki_defconfig', 'arch/arm64/configs/vendor/*.config', 'arch/arm64/configs/droidspaces.fragment') }}-
+            ccache-${{ env.BUILD_VARIANT }}-${{ runner.os }}-
 
       - name: Cache KPatch toolchain
         uses: actions/cache@v4
@@ -119,113 +128,69 @@ jobs:
           path: out/kpatch-toolchain
           key: kpatch-toolchain-12.2.rel1
 
-      # Both kernels come out of the same tree and .config and differ only in the
-      # version suffix, but a debug kernel's `vmlinux` and modules carry their own
-      # addresses, so each build publishes its own symbol archive.
-      - name: Build kernel (release)
+      - name: Build kernel
         timeout-minutes: 110
-        env:
-          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive }}
         run: |
           chmod +x build.sh scripts/ci/verify-artifacts.sh scripts/ci/smoke-boot-test.sh
-          mkdir -p "${OUT_DIR:-out}"
-          set -o pipefail
-          { JOBS="$(nproc)" bash build.sh all && JOBS="$(nproc)" bash build.sh kpatch; } 2>&1 | tee "${OUT_DIR:-out}/ci-build.log"
-
-      # Same tree, same .config, only the release suffix differs: the debug
-      # kernel reports `6.6.30-4k-ZHYxulei-debug-g<sha>` from `uname -r` and
-      # therefore needs its own module vermagic as well.
-      # KPATCH_TOOLCHAIN_DIR points back at the cached release toolchain, so the
-      # second build does not download (and cache-miss) another copy.
-      - name: Build kernel (debug)
-        timeout-minutes: 110
-        env:
-          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive_debug }}
-          OUT_DIR: out-debug
-          LOCALVERSION: -debug
-          KPATCH_TOOLCHAIN_DIR: out/kpatch-toolchain
-        run: |
           mkdir -p "${OUT_DIR}"
           set -o pipefail
           { JOBS="$(nproc)" bash build.sh all && JOBS="$(nproc)" bash build.sh kpatch; } 2>&1 | tee "${OUT_DIR}/ci-build.log"
 
-      # Everything the two packaging jobs read, laid out exactly like the build
-      # tree so they can reuse build.sh with OUT_DIR pointed at it.
-      # dtb/dtbo.img are optional: this tree does not build vendor DTBs, so the
-      # packages ship the Image only and the device keeps its stock dtb/dtbo.
+      # 只传递当前 variant 打包所需模块树，保留 build.sh 读取的目录布局。
       - name: Stage kernel outputs for packaging
         run: |
           rm -rf ci-kernel
-          mkdir -p ci-kernel/KPatch-Next/tools
-          # stage_tree <build dir> <destination> <module tree>...
-          stage_tree() {
-            local src="$1" dest="$2"
-            shift 2
-            mkdir -p "${dest}/dist" "${dest}/arch/arm64/boot"
-            for file in Image Image-kpatch-next-exp dtb dtbo.img; do
-              if [ -f "${src}/dist/${file}" ]; then
-                cp -f "${src}/dist/${file}" "${dest}/dist/"
-              fi
-            done
-            # Image stays in the arch/arm64/boot layout too, because build.sh reads
-            # the standard image from there (KERNEL_IMAGE) and only the KPatch one
-            # from out/dist (KPATCHED_IMAGE).
-            for file in Image dtbo.img dtb; do
-              if [ -f "${src}/arch/arm64/boot/${file}" ]; then
-                cp -f "${src}/arch/arm64/boot/${file}" "${dest}/arch/arm64/boot/"
-              fi
-            done
-            local tree
-            for tree in "$@"; do
-              cp -r "${src}/${tree}" "${dest}/${tree}"
-            done
-          }
-          stage_tree out ci-kernel/out modules_install modules_install_release
-          # The debug packaging job only needs the unstripped tree it ships.
-          stage_tree out-debug ci-kernel/out-debug modules_install
+          dest="ci-kernel/${OUT_DIR}"
+          mkdir -p "${dest}/dist" "${dest}/arch/arm64/boot" ci-kernel/KPatch-Next/tools
+          for file in Image Image-kpatch-next-exp dtb dtbo.img; do
+            if [ -f "${OUT_DIR}/dist/${file}" ]; then
+              cp -f "${OUT_DIR}/dist/${file}" "${dest}/dist/"
+            fi
+          done
+          for file in Image dtbo.img dtb; do
+            if [ -f "${OUT_DIR}/arch/arm64/boot/${file}" ]; then
+              cp -f "${OUT_DIR}/arch/arm64/boot/${file}" "${dest}/arch/arm64/boot/"
+            fi
+          done
+          cp -r "${OUT_DIR}/${MODULES_TREE}" "${dest}/${MODULES_TREE}"
           cp -f KPatch-Next/tools/kptools ci-kernel/KPatch-Next/tools/
 
       - name: Upload kernel outputs
         uses: actions/upload-artifact@v4
         with:
-          name: miro-kernel-ultra-kernel-${{ github.run_id }}
+          name: miro-kernel-ultra-kernel-${{ env.BUILD_VARIANT }}-${{ github.run_id }}
           path: ci-kernel/
           if-no-files-found: error
           retention-days: 14
 
-      # Both symbol archives plus the release build's raw metadata. `vmlinux` is
-      # deliberately not uploaded on its own: it is inside the archives already.
-      # The two archives stay flat in one directory because their names differ,
-      # and the bare filenames in each SHA256SUMS keep `sha256sum -c` working
-      # straight from the download directory on any platform.
+      # 两个 archive 和校验文件名不变；仅 release 携带同名原始元数据。
       - name: Stage debug symbols archives
         run: |
           rm -rf ci-symbols
           mkdir -p ci-symbols
-          cp -f "out/dist/${DEBUG_SYMBOLS_ARCHIVE}" ci-symbols/
-          for file in Image System.map vmlinux.symvers .config; do
-            if [ -f "out/dist/${file}" ]; then
-              cp -f "out/dist/${file}" ci-symbols/
-            fi
-          done
+          cp -f "${OUT_DIR}/dist/${DEBUG_SYMBOLS_ARCHIVE}" ci-symbols/
           sums_files=("${DEBUG_SYMBOLS_ARCHIVE}")
-          for file in System.map vmlinux.symvers; do
-            if [ -f "ci-symbols/${file}" ]; then
-              sums_files+=("${file}")
-            fi
-          done
-          ( cd ci-symbols && sha256sum "${sums_files[@]}" > SHA256SUMS-debug-symbols )
-
-          cp -f "out-debug/dist/${DEBUG_SYMBOLS_ARCHIVE_DEBUG}" ci-symbols/
-          ( cd ci-symbols && sha256sum "${DEBUG_SYMBOLS_ARCHIVE_DEBUG}" > SHA256SUMS-debug-kernel-symbols )
-        env:
-          DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive }}
-          DEBUG_SYMBOLS_ARCHIVE_DEBUG: ${{ steps.build-id.outputs.symbols_archive_debug }}
+          if [ "${BUILD_VARIANT}" = release ]; then
+            for file in Image System.map vmlinux.symvers .config; do
+              if [ -f "${OUT_DIR}/dist/${file}" ]; then
+                cp -f "${OUT_DIR}/dist/${file}" ci-symbols/
+              fi
+            done
+            for file in System.map vmlinux.symvers; do
+              if [ -f "ci-symbols/${file}" ]; then
+                sums_files+=("${file}")
+              fi
+            done
+            sums_name=SHA256SUMS-debug-symbols
+          else
+            sums_name=SHA256SUMS-debug-kernel-symbols
+          fi
+          ( cd ci-symbols && sha256sum "${sums_files[@]}" > "${sums_name}" )
 
       - name: Upload debug symbols archives
         uses: actions/upload-artifact@v4
         with:
-          name: miro-kernel-ultra-symbols-${{ github.run_id }}
+          name: miro-kernel-ultra-symbols-${{ env.BUILD_VARIANT }}-${{ github.run_id }}
           path: ci-symbols/
           if-no-files-found: error
           include-hidden-files: true
@@ -235,41 +200,61 @@ jobs:
         if: always()
         run: |
           rm -rf ci-logs
-          mkdir -p ci-logs
-          for dir in out out-debug; do
-            mkdir -p "ci-logs/${dir}"
-            found=0
-            for file in build.log modules_install.log ci-build.log; do
-              if [ -f "${dir}/${file}" ]; then
-                gzip -c "${dir}/${file}" > "ci-logs/${dir}/${file}.gz"
-                found=1
-              fi
-            done
-            if [ "$found" -eq 0 ]; then
-              printf '%s\n' 'No build logs: this build may not have started; inspect the workflow job/step logs.' > "ci-logs/${dir}/not-started.txt"
+          mkdir -p "ci-logs/${OUT_DIR}"
+          found=0
+          for file in build.log modules_install.log ci-build.log; do
+            if [ -f "${OUT_DIR}/${file}" ]; then
+              gzip -c "${OUT_DIR}/${file}" > "ci-logs/${OUT_DIR}/${file}.gz"
+              found=1
             fi
           done
+          if [ "$found" -eq 0 ]; then
+            printf '%s\n' 'No build logs: this build may not have started; inspect the workflow job/step logs.' > "ci-logs/${OUT_DIR}/not-started.txt"
+          fi
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ github.run_id }}
+          name: build-logs-${{ env.BUILD_VARIANT }}-${{ github.run_id }}
           path: ci-logs/
           if-no-files-found: warn
           retention-days: 14
 
+  build-debug:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      USE_CCACHE: "1"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      KBUILD_BUILD_USER: github-actions
+      KBUILD_BUILD_HOST: github
+      BUILD_VARIANT: debug
+      OUT_DIR: out-debug
+      LOCALVERSION: -debug
+      MODULES_TREE: modules_install
+      # runner 的文件系统独立，路径仍与工具链缓存保持一致。
+      KPATCH_TOOLCHAIN_DIR: out/kpatch-toolchain
+      DEBUG_SYMBOLS_ARCHIVE: ${{ needs.preflight.outputs.symbols_archive_debug }}
+    outputs:
+      debug_zip: ${{ needs.preflight.outputs.debug_zip }}
+      kpatch_debug_zip: ${{ needs.preflight.outputs.kpatch_debug_zip }}
+    steps: *build-steps
+
   # Release pair: standard + KPatch-Next EXP, modules stripped. Runs in parallel
   # with the debug packaging job.
   package-release:
-    needs: build
+    needs: build-release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
     env:
-      ANYKERNEL3_ZIP: ${{ needs.build.outputs.standard_zip }}
-      ANYKERNEL3_KPATCH_ZIP: ${{ needs.build.outputs.kpatch_zip }}
+      ANYKERNEL3_ZIP: ${{ needs.build-release.outputs.standard_zip }}
+      ANYKERNEL3_KPATCH_ZIP: ${{ needs.build-release.outputs.kpatch_zip }}
       MODULES_REF_DIR: ci-kernel/out/modules_install_release
       KPATCH_TOOLS: ci-kernel/KPatch-Next/tools/kptools
     steps:
@@ -285,7 +270,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: miro-kernel-ultra-kernel-${{ github.run_id }}
+          name: miro-kernel-ultra-kernel-release-${{ github.run_id }}
           path: ci-kernel
 
       - name: Package release zips
@@ -328,14 +313,14 @@ jobs:
   # suffix and the modules keep their debug info so a crash address can be
   # resolved with objdump.
   package-debug:
-    needs: build
+    needs: build-debug
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
     env:
-      ANYKERNEL3_DEBUG_ZIP: ${{ needs.build.outputs.debug_zip }}
-      ANYKERNEL3_KPATCH_DEBUG_ZIP: ${{ needs.build.outputs.kpatch_debug_zip }}
+      ANYKERNEL3_DEBUG_ZIP: ${{ needs.build-debug.outputs.debug_zip }}
+      ANYKERNEL3_KPATCH_DEBUG_ZIP: ${{ needs.build-debug.outputs.kpatch_debug_zip }}
       MODULES_REF_DIR: ci-kernel/out-debug/modules_install
       KPATCH_TOOLS: ci-kernel/KPatch-Next/tools/kptools
     steps:
@@ -351,7 +336,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: miro-kernel-ultra-kernel-${{ github.run_id }}
+          name: miro-kernel-ultra-kernel-debug-${{ github.run_id }}
           path: ci-kernel
 
       - name: Package debug zips
@@ -443,9 +428,15 @@ jobs:
           name: miro-kernel-ultra-debug-${{ github.run_id }}
           path: release-assets/debug
 
+      # 文件名互不冲突，两份 symbols 下载到同一目录供发布使用。
       - uses: actions/download-artifact@v4
         with:
-          name: miro-kernel-ultra-symbols-${{ github.run_id }}
+          name: miro-kernel-ultra-symbols-release-${{ github.run_id }}
+          path: release-assets/symbols
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: miro-kernel-ultra-symbols-debug-${{ github.run_id }}
           path: release-assets/symbols
 
       - name: Generate bilingual release notes
