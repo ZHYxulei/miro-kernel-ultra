@@ -13,7 +13,7 @@
 #
 # Usage:
 #   bash build.sh help          Show help
-#   bash build.sh quick         One-command: update submodules + menuconfig + compile + package
+#   bash build.sh quick         使用已选版本：menuconfig + 编译 + 打包
 #   bash build.sh defconfig     Only generate .config
 #   bash build.sh menuconfig    Open menuconfig UI to edit .config
 #   bash build.sh kernel        Build kernel (Image + modules + dtbs)
@@ -25,7 +25,7 @@
 #   bash build.sh deepclean     Deep clean: out/ + AnyKernel3/ + submodule artifacts
 #   bash build.sh mrproper      Full source tree clean (make mrproper + deepclean)
 #   bash build.sh toolchain     Show current toolchain configuration
-#   bash build.sh update-submodules  Update KernelSU and AnyKernel3 to latest upstream
+#   bash build.sh update-submodules <模块> <完整SHA>  显式选择已审查的上游提交
 #   bash build.sh install-deps  Install build dependencies (apt/dnf/pacman)
 #
 # Environment variables:
@@ -461,7 +461,15 @@ show_toolchain() {
 init_submodules() {
     log "Initializing submodules..."
     if [ -f .gitmodules ]; then
-        git submodule update --init --recursive
+        local module
+        # 仅初始化缺失模块，保留已审查的版本选择以及子模块内的本地修改。
+        for module in KernelSU AnyKernel3 KPatch-Next; do
+            if [ ! -e "$module/.git" ]; then
+                git submodule update --init --recursive -- "$module"
+            else
+                log "$module: preserving $(git -C "$module" rev-parse --short HEAD)"
+            fi
+        done
     else
         log "No .gitmodules found, skipping."
     fi
@@ -556,9 +564,14 @@ build_kernel() {
         log "Building kernel (Image + modules + dtbs)..."
         make "${MAKE_ARGS[@]}" Image modules dtbs 2>&1 | tee "${ERROR_LOG}"
     fi
-    local make_status=${PIPESTATUS[0]}
+    local pipeline_status=("${PIPESTATUS[@]}")
+    local make_status=${pipeline_status[0]}
     set -e
 
+    if [ "${pipeline_status[1]}" -ne 0 ]; then
+        error "Could not write build log: ${ERROR_LOG}"
+        exit 1
+    fi
     if [ "$make_status" -ne 0 ]; then
         show_build_errors "${ERROR_LOG}"
         error "Kernel build failed! (exit code: ${make_status})"
@@ -979,17 +992,39 @@ mrproper() {
 }
 
 update_submodules() {
-    log "Updating submodules to latest upstream..."
-
-    # Fetch latest from upstream for all submodules
-    git submodule foreach 'git fetch origin && git checkout origin/HEAD && echo "Updated: $(basename $(pwd)) -> $(git log --oneline -1)"'
-
-    # Stage the updated submodule pointers
-    git add KernelSU AnyKernel3 KPatch-Next
-    log "Submodule pointers staged. Run 'git commit' to save changes."
-    log ""
-    log "Submodule status:"
-    git submodule status
+    local module="${1:-}" revision="${2:-}" repository current target
+    case "$module" in
+        KernelSU|AnyKernel3|KPatch-Next) ;;
+        *) error "Usage: bash build.sh update-submodules <KernelSU|AnyKernel3|KPatch-Next> <full SHA>"; return 1 ;;
+    esac
+    if [[ ! "$revision" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        error "Specify an audited full 40-character commit SHA, not a moving branch."
+        return 1
+    fi
+    if [ ! -e "$module/.git" ]; then
+        error "Initialize the pinned submodule first: git submodule update --init --recursive $module"
+        return 1
+    fi
+    # 拒绝覆盖本地修改；仅从声明的仓库选择明确提交，不自动暂存。
+    if [ -n "$(git -C "$module" status --porcelain --untracked-files=all)" ]; then
+        error "$module has local changes or untracked files; preserve them before updating."
+        return 1
+    fi
+    repository="$(git config -f .gitmodules --get "submodule.${module}.url")"
+    current="$(git -C "$module" rev-parse HEAD)"
+    git -C "$module" fetch --no-tags "$repository" "$revision"
+    target="$(git -C "$module" rev-parse FETCH_HEAD^{commit})"
+    if [ "${target,,}" != "${revision,,}" ]; then
+        error "Fetched commit does not match the requested SHA."
+        return 1
+    fi
+    # 定制 fork 必须包含现有提交；禁止用上游快照丢弃设备适配。
+    if [ "$module" != KernelSU ] && ! git -C "$module" merge-base --is-ancestor "$current" "$target"; then
+        error "$module target does not preserve current fork commits; merge and publish the adaptation first."
+        return 1
+    fi
+    git -C "$module" checkout --detach "$target"
+    log "$module: $current -> $target (not staged; review compatibility before building)"
 }
 
 menuconfig() {
@@ -1005,13 +1040,9 @@ menuconfig() {
     log "Configuration saved to ${OUT_DIR}/.config"
 }
 
-# Quick build: update submodules → menuconfig → compile → package
-# One-command workflow for full build with interactive configuration.
+# 快速构建只使用仓库锁定版本，上游升级需单独明确选择提交。
 quick() {
-    log "=== Quick Build: update → menuconfig → compile → package ==="
-
-    # Step 1: Update submodules to latest upstream
-    update_submodules
+    log "=== Quick Build: pinned submodules → menuconfig → compile → package ==="
 
     # Step 2: Check prerequisites and setup toolchain
     check_prerequisites
@@ -1057,7 +1088,7 @@ Usage: bash build.sh <command>
 
 Commands:
   help        Show this help message
-  quick       One-command build: update submodules → menuconfig → compile → package
+  quick       Build selected versions: menuconfig → compile → package (no update)
   defconfig   Generate .config (merge gki_defconfig + vendor fragments)
   menuconfig  Open kernel menuconfig UI to edit .config interactively
   kernel      Build kernel (defconfig + Image + modules + dtbs)
@@ -1076,7 +1107,8 @@ Commands:
   clean       Clean build directory (preserves .config)
   deepclean   Deep clean: out/ + AnyKernel3/ + KernelSU artifacts + stale files
   mrproper    Full source tree clean (make mrproper + deepclean)
-  update-submodules  Update KernelSU, AnyKernel3, and KPatch-Next
+  update-submodules <KernelSU|AnyKernel3|KPatch-Next> <full SHA>
+              Select one audited commit; preserve fork history; do not stage changes
 
 Environment variables:
   CLANG_PATH        Path to directory containing custom clang (e.g. /opt/clang/bin)
@@ -1115,7 +1147,7 @@ Tips for faster builds:
   4. Increase jobs:  JOBS=$(nproc) bash build.sh all
 
 Examples:
-  bash build.sh quick                                  # One-command: update+menuconfig+build+package
+  bash build.sh quick                                  # 使用已选版本配置、编译并打包
   bash build.sh install-deps                           # Install build dependencies
   bash build.sh zip                                    # Full build + flashable zip
   bash build.sh zip-dual                               # Build release standard + KPatch EXP zips
@@ -1131,7 +1163,7 @@ Examples:
   bash build.sh toolchain                              # Show toolchain info
   bash build.sh clean                                  # Clean out/ (keep .config)
   bash build.sh deepclean                              # Remove all build artifacts
-  bash build.sh update-submodules                      # Update KernelSU + AnyKernel3 to upstream
+  bash build.sh update-submodules KernelSU <full SHA>   # 选择已审查提交，不自动暂存
   bash build.sh mrproper                               # Full source tree clean
   CLANG_PATH=/opt/clang/bin bash build.sh zip          # Build with custom clang
   USE_CCACHE=0 bash build.sh all                       # Disable ccache
@@ -1261,7 +1293,7 @@ main() {
             mrproper
             ;;
         update-submodules)
-            update_submodules
+            update_submodules "${2:-}" "${3:-}"
             ;;
         *)
             error "Unknown command: $cmd"

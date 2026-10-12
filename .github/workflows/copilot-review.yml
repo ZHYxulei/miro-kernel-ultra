@@ -1,0 +1,51 @@
+name: Copilot review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 需要请求审查的 PR 编号
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: write
+concurrency:
+  group: copilot-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+jobs:
+  request-review:
+    # 手动调度只在默认分支运行，绝不加载候选分支的工作流代码。
+    if: github.event_name != 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # 仅使用官方 REST 元数据接口；不检出、不执行 PR 内容。
+      - name: 尽力请求官方 Copilot reviewer
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_REVIEW_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        run: |
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::warning::PR 编号非法，跳过审查请求。'
+            exit 0
+          fi
+          if ! state=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.state'); then
+            echo '::warning::读取 PR 失败，请人工检查权限和网络。'
+            exit 0
+          fi
+          if [[ "$state" != open ]]; then
+            echo '::warning::PR 已关闭，跳过审查请求。'
+            exit 0
+          fi
+          # requested_reviewers 是官方接口；特定账户是否允许 bot 由 GitHub 决定。
+          if ! gh api --method POST "repos/$GH_REPO/pulls/$PR_NUMBER/requested_reviewers" \
+            -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+            --input - <<'JSON'
+          {"reviewers":["copilot-pull-request-reviewer[bot]"]}
+          JSON
+          then
+            echo '::warning::Copilot 审查请求不可用：请检查订阅、仓库规则和令牌权限，或在界面人工请求。可选 COPILOT_REVIEW_TOKEN 不保证 bot 可用；不阻断 Kernel CI。'
+          fi

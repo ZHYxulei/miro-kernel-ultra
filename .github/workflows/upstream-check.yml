@@ -1,0 +1,34 @@
+name: Check upstreams
+on:
+  schedule:
+    - cron: '30 17 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  issues: write
+concurrency:
+  group: upstream-check
+  cancel-in-progress: false
+jobs:
+  check:
+    # 写权限任务只能从默认分支运行可信检测脚本。
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          submodules: false
+      - name: 离线逻辑自测
+        run: python3 scripts/ci/check-upstreams.py --self-test
+      # GITHUB_TOKEN 创建 PR 不触发常规事件；脚本显式调度 CI 与默认分支 Copilot。
+      # 不向候选构建传递此写令牌、PAT 或任何 secrets。
+      - name: 核对远端并提出子模块更新候选
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/ci/check-upstreams.py

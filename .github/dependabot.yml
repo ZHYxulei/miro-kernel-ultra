@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # 仅维护 Actions 依赖；子模块及嵌入源码由上游检测与人工回移植处理。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+    commit-message:
+      prefix: 'ci'

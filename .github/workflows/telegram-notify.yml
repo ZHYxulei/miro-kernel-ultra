@@ -1,0 +1,37 @@
+name: Telegram Kernel Notification
+
+on:
+  workflow_run:
+    workflows: ["Kernel CI/CD"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  notify:
+    # 特权通知不处理 PR 或来自 fork 的运行。
+    if: >-
+      contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event) &&
+      toJSON(github.event.workflow_run.pull_requests) == '[]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+      contains(fromJSON('["success", "failure", "cancelled"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # 仅使用默认分支的受信脚本，不检出候选提交，也不执行 artifact。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci/telegram-notify.py
+          sparse-checkout-cone-mode: false
+      - name: Notify Telegram
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ vars.TELEGRAM_THREAD_ID }}
+        run: python3 -I scripts/ci/telegram-notify.py

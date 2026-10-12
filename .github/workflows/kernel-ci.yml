@@ -17,13 +17,29 @@ concurrency:
   group: kernel-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install YAML parser
+        run: sudo apt-get update && sudo apt-get install -y python3-yaml
+      - name: Script syntax, YAML and offline tests
+        run: python3 -I scripts/ci/check-ci.py
+
   # The kernel is compiled twice: once as the release build and once with
   # LOCALVERSION=-debug. The suffix ends up in the module vermagic, so it cannot
   # be applied after the fact -- the debug build needs its own Image *and* its own
   # modules. The two packaging jobs below turn each build into its flashable pair
   # in parallel.
   build:
+    needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     permissions:
@@ -56,6 +72,20 @@ jobs:
             device-tree-compiler kmod dwarves \
             libelf-dev libssl-dev libncurses-dev zlib1g-dev \
             perl python3 rsync xz-utils zstd
+
+      - name: Validate build prerequisites
+        run: |
+          for tool in clang ld.lld llvm-strip flex bison bc cpio dtc zip unzip zstd; do
+            command -v "$tool" >/dev/null
+          done
+          for fragment in arch/arm64/configs/gki_defconfig arch/arm64/configs/vendor/sun_perf.config arch/arm64/configs/vendor/miro_perf.config arch/arm64/configs/droidspaces.fragment; do
+            test -s "$fragment"
+          done
+          git submodule status --recursive
+          test -e KernelSU/.git && test -e AnyKernel3/.git && test -e KPatch-Next/.git
+          mkdir -p out out-debug
+          df -h .
+          free -h
 
       - name: Resolve build id
         id: build-id
@@ -93,12 +123,14 @@ jobs:
       # version suffix, but a debug kernel's `vmlinux` and modules carry their own
       # addresses, so each build publishes its own symbol archive.
       - name: Build kernel (release)
+        timeout-minutes: 110
         env:
           DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive }}
         run: |
           chmod +x build.sh scripts/ci/verify-artifacts.sh scripts/ci/smoke-boot-test.sh
-          JOBS="$(nproc)" bash build.sh all
-          JOBS="$(nproc)" bash build.sh kpatch
+          mkdir -p "${OUT_DIR:-out}"
+          set -o pipefail
+          { JOBS="$(nproc)" bash build.sh all && JOBS="$(nproc)" bash build.sh kpatch; } 2>&1 | tee "${OUT_DIR:-out}/ci-build.log"
 
       # Same tree, same .config, only the release suffix differs: the debug
       # kernel reports `6.6.30-4k-ZHYxulei-debug-g<sha>` from `uname -r` and
@@ -106,14 +138,16 @@ jobs:
       # KPATCH_TOOLCHAIN_DIR points back at the cached release toolchain, so the
       # second build does not download (and cache-miss) another copy.
       - name: Build kernel (debug)
+        timeout-minutes: 110
         env:
           DEBUG_SYMBOLS_ARCHIVE: ${{ steps.build-id.outputs.symbols_archive_debug }}
           OUT_DIR: out-debug
           LOCALVERSION: -debug
           KPATCH_TOOLCHAIN_DIR: out/kpatch-toolchain
         run: |
-          JOBS="$(nproc)" bash build.sh all
-          JOBS="$(nproc)" bash build.sh kpatch
+          mkdir -p "${OUT_DIR}"
+          set -o pipefail
+          { JOBS="$(nproc)" bash build.sh all && JOBS="$(nproc)" bash build.sh kpatch; } 2>&1 | tee "${OUT_DIR}/ci-build.log"
 
       # Everything the two packaging jobs read, laid out exactly like the build
       # tree so they can reuse build.sh with OUT_DIR pointed at it.
@@ -202,9 +236,17 @@ jobs:
         run: |
           rm -rf ci-logs
           mkdir -p ci-logs
-          for file in build.log modules_install.log; do
-            if [ -f "out/${file}" ]; then
-              tail -n 200000 "out/${file}" | gzip -9 > "ci-logs/${file}.gz"
+          for dir in out out-debug; do
+            mkdir -p "ci-logs/${dir}"
+            found=0
+            for file in build.log modules_install.log ci-build.log; do
+              if [ -f "${dir}/${file}" ]; then
+                gzip -c "${dir}/${file}" > "ci-logs/${dir}/${file}.gz"
+                found=1
+              fi
+            done
+            if [ "$found" -eq 0 ]; then
+              printf '%s\n' 'No build logs: this build may not have started; inspect the workflow job/step logs.' > "ci-logs/${dir}/not-started.txt"
             fi
           done
 
@@ -380,7 +422,7 @@ jobs:
           scripts/ci/smoke-boot-test.sh smoke-images/*.Image
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [package-release, package-debug, smoke-test]
     runs-on: ubuntu-24.04
     permissions:

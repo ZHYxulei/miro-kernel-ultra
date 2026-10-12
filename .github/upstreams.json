@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "submodules": [
+    {"path": "KernelSU", "url": "https://github.com/Baka-SU/BakaSU.git", "strategy": "latest-release", "ref": "refs/tags/v4.2.0-rc3", "expected_sha": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb", "release_pins": {"refs/tags/v4.2.0-rc3": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb"}},
+    {"path": "AnyKernel3", "url": "https://github.com/ZHYxulei/AnyKernel3.git", "ref": "refs/heads/master"},
+    {"path": "KPatch-Next", "url": "https://github.com/ZHYxulei/KPatch-Next-EXP.git", "ref": "refs/heads/main"}
+  ],
+  "observations": [
+    {"id": "susfs", "url": "https://gitlab.com/simonpunk/susfs4ksu.git", "ref": "refs/heads/gki-android15-6.6", "observed_sha": null},
+    {"id": "bbg", "url": "https://github.com/vc-teahouse/Baseband-guard.git", "ref": "refs/heads/main", "observed_sha": null},
+    {"id": "adios", "url": "https://github.com/CachyOS/kernel-patches.git", "ref": "refs/heads/master", "observed_sha": null, "scope": "补丁集合整分支观察，不证明 ADIOS 自身发生变化；需人工筛选实际相关补丁。"},
+    {"id": "droidspaces", "url": "https://github.com/ravindu644/Droidspaces-OSS.git", "ref": "refs/heads/main", "observed_sha": null},
+    {"id": "linux-compression", "url": "https://github.com/gregkh/linux.git", "ref": "refs/heads/linux-6.6.y", "observed_sha": null, "scope": "Linux stable 镜像整分支观察，不证明压缩算法发生变化；需人工筛选与适配。"},
+    {"id": "xiaomi", "url": "https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git", "ref": "refs/heads/bsp-miro-v-oss", "observed_sha": null},
+    {"id": "ack", "url": "https://github.com/aosp-mirror/kernel_common.git", "ref": "refs/heads/android15-6.6", "observed_sha": null, "scope": "Android Common Kernel 官方 GitHub 镜像；观察 SHA 不是已导入源码版本。"}
+  ]
+}

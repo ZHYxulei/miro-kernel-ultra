@@ -3880,14 +3880,16 @@ static int do_tmpfile(struct nameidata *nd, unsigned flags,
 	{
 		fake_filename = susfs_open_redirect_spoof_do_sys_openat(path.dentry->d_inode);
 		if (fake_filename && !IS_ERR(fake_filename)) {
+			struct path fake_path;
+
+			error = filename_lookup(old_dfd, fake_filename,
+					flags | LOOKUP_DIRECTORY, &fake_path, NULL);
 			path_put(&path);
-			restore_nameidata();
-			set_nameidata(nd, old_dfd, fake_filename, NULL);
-			error = path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path);
 			if (unlikely(error)) {
 				putname(fake_filename);
 				return error;
 			}
+			path = fake_path;
 		}
 	}
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
@@ -3927,14 +3929,15 @@ static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 		{
 			fake_filename = susfs_open_redirect_spoof_do_sys_openat(path.dentry->d_inode);
 			if (fake_filename && !IS_ERR(fake_filename)) {
+				struct path fake_path;
+
+				error = filename_lookup(old_dfd, fake_filename, flags, &fake_path, NULL);
 				path_put(&path);
-				restore_nameidata();
-				set_nameidata(nd, old_dfd, fake_filename, NULL);
-				error = path_lookupat(nd, flags, &path);
 				if (unlikely(error)) {
 					putname(fake_filename);
 					return error;
 				}
+				path = fake_path;
 			}
 		}
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
@@ -3953,6 +3956,7 @@ static struct file *path_openat(struct nameidata *nd,
 			const struct open_flags *op, unsigned flags)
 {
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	struct filename *old_name = nd->name;
 	int old_dfd = nd->dfd;
 	bool is_nd_state_root_preset = (nd->state & ND_ROOT_PRESET);
 	struct filename *fake_filename = NULL;
@@ -3995,8 +3999,10 @@ static struct file *path_openat(struct nameidata *nd,
 		terminate_walk(nd);
 	}
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	if (fake_filename && !IS_ERR(fake_filename))
+	if (fake_filename && !IS_ERR(fake_filename)) {
+		nd->name = old_name;
 		putname(fake_filename);
+	}
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	if (likely(!error)) {
 		if (likely(file->f_mode & FMODE_OPENED))
