@@ -31,7 +31,7 @@ for job_id, job in jobs.items():
         assert dependency in needs, (job_id, dependency)
         assert output in jobs[dependency].get('outputs', {}), (dependency, output)
     for step in job.get('steps', []):
-        if step.get('uses') == 'actions/upload-artifact@v4':
+        if step.get('uses', '').partition('@')[0] == 'actions/upload-artifact':
             name = step['with']['name']
             for key, value in job.get('env', {}).items():
                 name = name.replace('${{ env.' + key + ' }}', value)
@@ -68,14 +68,14 @@ for variant, out_dir, suffix, modules, archive in (
         assert steps[name]['if'] == 'always()'
     package = jobs[f'package-{variant}']
     assert package['needs'] == f'build-{variant}'
-    downloads = [step['with']['name'] for step in package['steps'] if step.get('uses') == 'actions/download-artifact@v4']
+    downloads = [step['with']['name'] for step in package['steps'] if step.get('uses', '').partition('@')[0] == 'actions/download-artifact']
     assert downloads == [f'miro-kernel-ultra-kernel-{variant}-${{{{ github.run_id }}}}']
 
 symbols = next(step['run'] for step in jobs['build-release']['steps'] if step.get('name') == 'Stage debug symbols archives')
 assert 'if [ "${BUILD_VARIANT}" = release ]; then' in symbols
 assert symbols.index('if [ "${BUILD_VARIANT}" = release ]; then') < symbols.index('for file in Image System.map vmlinux.symvers .config; do') < symbols.index('else')
 assert 'SHA256SUMS-debug-symbols' in symbols and 'SHA256SUMS-debug-kernel-symbols' in symbols
-symbol_downloads = [step['with'] for step in jobs['release']['steps'] if step.get('uses') == 'actions/download-artifact@v4' and step['with']['path'] == 'release-assets/symbols']
+symbol_downloads = [step['with'] for step in jobs['release']['steps'] if step.get('uses', '').partition('@')[0] == 'actions/download-artifact' and step['with']['path'] == 'release-assets/symbols']
 assert {step['name'] for step in symbol_downloads} == {
     f'miro-kernel-ultra-symbols-{variant}-${{{{ github.run_id }}}}' for variant in ('release', 'debug')}
 assert len(symbol_downloads) == 2

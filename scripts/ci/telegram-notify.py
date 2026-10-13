@@ -220,12 +220,10 @@ def main():
         return
     chat = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
     if not chat:
-        print('::warning::未配置 vars.TELEGRAM_CHAT_ID，跳过 Telegram 通知；不会猜测目标频道')
-        return
-    token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+        raise Error('未读取到 TELEGRAM_CHAT_ID；请检查 Telegram Bot 环境或仓库的 Variables/Secrets 配置')
+    token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
     if not token:
-        print('未配置 TELEGRAM_BOT_TOKEN，跳过通知')
-        return
+        raise Error('未读取到 TELEGRAM_BOT_TOKEN；请检查 Telegram Bot 环境或仓库的 Secret 配置')
     repo = os.environ.get('GITHUB_REPOSITORY', '')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise Error('GITHUB_REPOSITORY 无效')
