@@ -96,7 +96,10 @@ class API:
         self.token = os.environ["GH_TOKEN"]
 
     def call(self, method, path, data=None, repo=None):
-        request = urllib.request.Request("https://api.github.com/repos/" + (repo or self.repo) + "/" + path,
+        url = "https://api.github.com/repos/" + (repo or self.repo)
+        if path:
+            url += "/" + path.lstrip("/")
+        request = urllib.request.Request(url,
             method=method, data=None if data is None else json.dumps(data).encode(),
             headers={"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -327,6 +330,21 @@ class OfflineTests(unittest.TestCase):
         with self.assertRaises(urllib.error.URLError):
             dispatch(api, pr, "main")
         self.assertFalse(any(c.args[1].endswith("comments") for c in api.call.call_args_list))
+
+    def test_api_root_url(self):
+        api = API.__new__(API)
+        api.repo, api.token = "owner/repo", "offline-token"
+        for path, repo, suffix in (("", None, "owner/repo"),
+                                   ("pulls", None, "owner/repo/pulls"),
+                                   ("/releases", "other/repo", "other/repo/releases")):
+            response = Mock()
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=False)
+            response.read.return_value = b'{}'
+            with patch.object(urllib.request, "urlopen", return_value=response) as opened:
+                api.call("GET", path, repo=repo)
+                self.assertEqual(opened.call_args.args[0].full_url,
+                                 "https://api.github.com/repos/" + suffix)
 
     def test_network_failure_no_writes(self):
         api = Mock(repo="owner/repo")
