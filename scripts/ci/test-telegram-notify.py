@@ -163,12 +163,14 @@ class Tests(unittest.TestCase):
         self.assertEqual(gh.mock_calls, [])
         self.assertEqual(tg.mock_calls, [])
 
-    def test_missing_chat_skips(self):
-        output = io.StringIO()
-        with patch.dict(os.environ, {}, clear=True), patch.object(n.sys, 'argv', ['telegram-notify.py']), contextlib.redirect_stdout(output):
-            n.main()
-        self.assertIn('::warning::', output.getvalue())
-        self.assertIn('vars.TELEGRAM_CHAT_ID', output.getvalue())
+    def test_missing_configuration_fails(self):
+        for env, missing in (({}, 'TELEGRAM_CHAT_ID'),
+                             ({'TELEGRAM_CHAT_ID': '-123'}, 'TELEGRAM_BOT_TOKEN')):
+            with self.subTest(missing=missing), patch.dict(os.environ, env, clear=True), patch.object(n.sys, 'argv', ['telegram-notify.py']):
+                with self.assertRaises(n.Error) as caught:
+                    n.main()
+                self.assertIn(missing, str(caught.exception))
+                self.assertIn('Telegram Bot', str(caught.exception))
 
 
 if __name__ == '__main__':
