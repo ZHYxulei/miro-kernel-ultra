@@ -9,6 +9,10 @@
 #include <linux/susfs_def.h>
 #include <linux/statfs.h>
 
+/* https://gitlab.com/simonpunk/susfs4ksu, gki-android15-6.6
+ * Source: bd7d199ac87808001127e8a6d076832e2938cf0d
+ * Keep the Xiaomi/BakaSU integration hooks when updating this source.
+ */
 #define SUSFS_VERSION "v2.3.0"
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
 #define SUSFS_VARIANT "NON-GKI"

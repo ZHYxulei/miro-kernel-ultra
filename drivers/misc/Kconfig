@@ -5,6 +5,14 @@
 
 menu "Misc devices"
 
+config NTSYNC
+	tristate "NT synchronization primitive emulation"
+	depends on MMU
+	help
+	  Provide semaphore, mutex, event and wait operations for NT emulators
+	  through /dev/ntsync. Each open device creates an isolated namespace.
+	  To build as a module, choose M; the module is called ntsync.
+
 config SENSORS_LIS3LV02D
 	tristate
 	depends on INPUT

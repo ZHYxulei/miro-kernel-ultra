@@ -26,7 +26,12 @@
 | GKI `perf` / `consolidate` 构建变体 | 已支持 |
 | DroidSpaces 配置片段 | 已接入构建配置 |
 | SUSFS | 已接入 |
-| ReSukiSU/KernelSU | 已接入（子模块） |
+| BakaSU（原 ReSukiSU）/KernelSU | 已接入（子模块；仍固定 v4.2.0-rc3，未完成升级） |
+| Re:Kernel 11.7 | 源码内置 `CONFIG_REKERNEL=y`；CFI 对象编译已检查，用户态/设备待验证 |
+| NTsync | Linux v6.14 回移植，`CONFIG_NTSYNC=y`；Wine/Android 设备访问待验证 |
+| MGLRU | 已有实现，`CONFIG_LRU_GEN=y` / `CONFIG_LRU_GEN_ENABLED=y`，STATS 关闭 |
+| LZ4KD | 授权依据不足，尚未加入；不替代 LZ4 或 lzo-rle 默认值 |
+| Telegram 构建通知 | 单次 ZIP 媒体组与回退已实现；仅离线测试，未线上验证 |
 | Baseband-guard 基带保护 | 已接入（LSM 模块） |
 | ADIOS I/O 调度器 | 已接入 |
 | TMPFS 完整支持 | 已接入（inode64 + quota） |
@@ -46,9 +51,63 @@ cmdline/bootconfig 伪造、open redirect 和内存映射隐藏等功能。SUSFS
 源自 [`susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu) 的
 `gki-android15-6.6` 分支，ReSukiSU 内置 SUSFS 支持作为 inline hook 方式。
 
-ReSukiSU/KernelSU 已作为 git 子模块接入，源码位于 `KernelSU/`（上游
-`ReSukiSU/ReSukiSU`），内核驱动通过符号链接 `drivers/kernelsu -> ../KernelSU/kernel`
-接入驱动树，并在 `gki_defconfig` 中启用了 `CONFIG_KSU` 和 `CONFIG_KSU_SUSFS`。
+**ReSukiSU 已更名为 BakaSU**，上游为
+[`Baka-SU/BakaSU`](https://github.com/Baka-SU/BakaSU)。本地子模块目录 `KernelSU/`
+和 `drivers/kernelsu -> ../KernelSU/kernel` 保留以兼容现有构建；历史 ReSukiSU
+名称不作全局替换。[`gki_defconfig`](arch/arm64/configs/gki_defconfig) 已启用
+`CONFIG_KSU` 和 `CONFIG_KSU_SUSFS`。
+
+### 功能现状与验证边界（2026-10-14）
+
+以下“接入/编译”不表示已完成整机启动、全链路 CI 或性能验证。
+
+- **BakaSU 更新 pending**：本地 HEAD 仍为
+  [`239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb`](https://github.com/Baka-SU/BakaSU/commit/239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb)
+  （`v4.2.0-rc3`）。此前检查的最新 main 快照
+  [`d7260ca1e5c128061122924d0d48754e361e135c`](https://github.com/Baka-SU/BakaSU/commit/d7260ca1e5c128061122924d0d48754e361e135c)
+  在 [`susfs_compat.mk`](https://github.com/Baka-SU/BakaSU/blob/d7260ca1e5c128061122924d0d48754e361e135c/kernel/tools/susfs_compat.mk)
+  主动报错 `Please wait susfs update.`；兼容候选
+  [`5b76b884c75f729a220bb317aa4a4fc78f0e0e9c`](https://github.com/Baka-SU/BakaSU/commit/5b76b884c75f729a220bb317aa4a4fc78f0e0e9c)
+  的 checkout 被权限阻断，因此未升级。复核时本地 `origin/main` 已指向
+  `6200478dd76fc63093a8226d360f5072c46aea26`，不能再把 d7260ca 当作实时最新；
+  新 main 的兼容性仍待检查，不能据此宣称更新完成。
+- **SUSFS v2.3.0**：Android15-6.6 来源固定
+  [`bd7d199ac87808001127e8a6d076832e2938cf0d`](https://gitlab.com/simonpunk/susfs4ksu/-/commit/bd7d199ac87808001127e8a6d076832e2938cf0d)。
+  [`fs/susfs.c`](fs/susfs.c) 与头文件
+  [`susfs.h`](include/linux/susfs.h)、[`susfs_def.h`](include/linux/susfs_def.h)
+  已匹配；[`fs/exec.c`](fs/exec.c) 清理重复/过时声明，保留 Xiaomi/BakaSU 集成 hook。
+  仍待完整构建、设备启动与 GKI/KMI 验证。
+- **Re:Kernel 11.7**：固定
+  [`Sakion-Team/Re-Kernel e67cd94c524c27503cb340f8bbab594eca95dbef`](https://github.com/Sakion-Team/Re-Kernel/commit/e67cd94c524c27503cb340f8bbab594eca95dbef)，
+  源码内置于 [`drivers/android/`](drivers/android/rekernel_main.c)，配置为
+  `CONFIG_REKERNEL=y`。已有 CFI 对象编译检查通过；
+  [`协议定义`](drivers/android/rekernel.h) / [`Generic Netlink`](drivers/android/rekernel_netlink.c)
+  需要匹配用户态，监控操作与事件订阅需要管理特权。未提供 legacy raw Netlink/proc
+  接口；async Binder cleanup 禁用。用户态联调、SELinux 和设备效果待验证。
+- **NTsync**：[`drivers/misc/ntsync.c`](drivers/misc/ntsync.c) 与
+  [`UAPI`](include/uapi/linux/ntsync.h) 回移植自 Linux v6.14
+  [`38fec10eb60d687e30c8c6b5420d86e8149f7557`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=38fec10eb60d687e30c8c6b5420d86e8149f7557)，
+  加入 namespace / owner 修复
+  [`180a232ea78003d1dc869b217b4e49106fd58e8f`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=180a232ea78003d1dc869b217b4e49106fd58e8f)、
+  [`61611481f7b599e0526a3782c626b1a9deeb48bd`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=61611481f7b599e0526a3782c626b1a9deeb48bd)。
+  `CONFIG_NTSYNC=y` 内嵌、已有对象编译记录；用于 Wine 的 NT 同步，**不是通用手机性能优化**。
+  `/dev/ntsync` 的 Android SELinux/访问权限及匹配 Wine 用户态尚未在设备验证。
+- **MGLRU**：[`mm/vmscan.c`](mm/vmscan.c) 已有实现，不重复移植；
+  `CONFIG_LRU_GEN=y`、`CONFIG_LRU_GEN_ENABLED=y`，`CONFIG_LRU_GEN_STATS` 关闭。
+  内存压力下可能改善回收、减少抖动，但有 CPU 开销与 `mmap_lock` 争用风险，
+  性能和功耗未实测；保持默认 `min_ttl_ms=0`，不凭经验随意调节。
+- **LZ4KD pending**：授权依据不足，尚未加入；保持现有
+  [`LZ4`](lib/lz4/) 与 [`zram lzo-rle 默认`](drivers/block/zram/zram_drv.c)，不声称替换或提速。
+- **Telegram 通知**：[`telegram-notify.py`](scripts/ci/telegram-notify.py) 已实现一次
+  `sendMediaGroup` 发送至多 4 个安装 ZIP，仅首项 caption，按解析后的 UTF-16
+  code units（symbols）限制为 1024；symbols、log、SHA 产物仅给 links。
+  1 个文件使用 `sendDocument`，0 个文件或构建失败/取消使用 `sendMessage`。
+  [`离线测试`](scripts/ci/test-telegram-notify.py) 与
+  [`CI 静态/离线检查`](scripts/ci/check-ci.py) 不等于线上测试，真实发送尚未验证。
+
+配置证据来自已有 `/tmp/miro-rekernel-check/.config`：Re:Kernel、NTsync、MGLRU
+及 `CONFIG_CFI_CLANG` 为 `y`，STATS 关闭；对象与命令记录存在且使用 `-fsanitize=kcfi`。
+本轮只复核已有记录，不重复编译，也不以旧 `out/` 推断新增功能或完整镜像已通过。
 
 ## 设备源码基线
 
@@ -110,7 +169,7 @@ git submodule update --init --recursive
 ```bash
 git submodule status
 # 预期输出：
-#  3576e6a5255fc880c00f6a3175d89268a6d942be KernelSU (v4.2.0-rc2)
+#  239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb KernelSU (v4.2.0-rc3)
 #  d80bb86cc905e7c7f14d87b16b1859b9d750277c AnyKernel3 (heads/master)
 #  c547574cb2e931b022c0ae40a6848d64d27aa57a KPatch-Next (0.13.13)
 ```
@@ -522,11 +581,11 @@ DroidSpaces 配置片段当前启用以下能力：
 配置。若某个构建变体没有经过 `build.config.msm.perf`，则不会自动加载该
 片段。
 
-## ReSukiSU/KernelSU
+## BakaSU（原 ReSukiSU）/KernelSU
 
-ReSukiSU/KernelSU 通过 git 子模块方式接入：
+BakaSU 通过 git 子模块方式接入，沿用兼容目录与历史配置名称：
 
-- **子模块**：`KernelSU/`，上游为 [`ReSukiSU/ReSukiSU`](https://github.com/ReSukiSU/ReSukiSU)
+- **子模块**：[`KernelSU/`](KernelSU/)，现上游为 [`Baka-SU/BakaSU`](https://github.com/Baka-SU/BakaSU)；本地旧 remote URL 保留，未在本轮修改
 - **驱动链接**：`drivers/kernelsu -> ../KernelSU/kernel`（符号链接）
 - **Kconfig 入口**：[`drivers/Kconfig`](drivers/Kconfig) 中 `source "drivers/kernelsu/Kconfig"`
 - **构建入口**：[`drivers/Makefile`](drivers/Makefile) 中 `obj-$(CONFIG_KSU) += kernelsu/`
@@ -674,7 +733,9 @@ echo adios > /sys/block/sda/queue/scheduler
 
 本项目基于以下开源项目，感谢它们的贡献：
 
-- [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) — 内核级 root 管理和模块扩展框架
+- [BakaSU（原 ReSukiSU）](https://github.com/Baka-SU/BakaSU) — 内核级 root 管理和模块扩展框架
+- [Re:Kernel](https://github.com/Sakion-Team/Re-Kernel) — 内核事件通知（本地适配 11.7）
+- [Linux NTsync](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/misc/ntsync.c?h=v6.14) — Wine NT 同步驱动来源
 - [SUSFS (susfs4ksu)](https://gitlab.com/simonpunk/susfs4ksu) — 内核级 root 隐藏和文件系统隔离补丁
 - [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) — 内核级基带等受保护分区写保护的 LSM 模块
 - [CachyOS kernel-patches](https://github.com/CachyOS/kernel-patches) — ADIOS I/O 调度器（作者 Masahito Suzuki）
@@ -691,7 +752,7 @@ echo adios > /sys/block/sda/queue/scheduler
 开源许可证。项目中集成的第三方组件各自保持其原始许可证：
 
 - **Linux 内核**：GPL-2.0 WITH Linux-syscall-note
-- **ReSukiSU/KernelSU**：GPL-2.0（子模块 `KernelSU/`）
+- **BakaSU（原 ReSukiSU）/KernelSU**：GPL-2.0（兼容子模块目录 `KernelSU/`）
 - **SUSFS (susfs4ksu)**：GPL-2.0（内核补丁部分）
 - **KPatch-Next-EXP**：GPL-2.0（子模块 `KPatch-Next/`）
 

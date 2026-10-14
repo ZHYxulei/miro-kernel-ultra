@@ -157,4 +157,14 @@ config ANDROID_VENDOR_OEM_DATA
 
 	  If even slightly unsure, say Y.
 
+config REKERNEL
+	bool "Re:Kernel frozen task notifications"
+	depends on ANDROID_BINDER_IPC_C && ANDROID_VENDOR_HOOKS
+	depends on NET && INET && NETFILTER && CGROUP_FREEZER
+	depends on !ANDROID_BINDER_IPC_DEFAULT_IS_RUST
+	help
+	  Embed Re:Kernel 11.7 notification hooks and generic netlink transport.
+	  Requires a compatible privileged userspace daemon. Async Binder cleanup
+	  is disabled to avoid private symbol calls and Binder queue mutation.
+
 endmenu

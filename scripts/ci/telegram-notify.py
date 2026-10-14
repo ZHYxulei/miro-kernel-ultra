@@ -70,9 +70,27 @@ class GitHub:
         return http(f'{self.base}/actions/artifacts/{int(artifact_id)}/zip', self.headers,
                     limit=200*MIB, redirect=True)
 
+def utf16_len(text):
+    return len(text.encode('utf-16-le')) // 2
+
+def truncate(text, limit):
+    if utf16_len(text) <= limit:
+        return text
+    result, used = [], 0
+    for char in text:
+        size = utf16_len(char)
+        if used + size > max(0, limit - 1):
+            break
+        result.append(char)
+        used += size
+    return ''.join(result) + ('…' if limit else '')
+
 def esc(value, limit=240):
-    text = str(value)
-    return html.escape(text if len(text) <= limit else text[:limit-1] + '…', quote=True)
+    return html.escape(truncate(str(value), limit), quote=True)
+
+def text_len(text):
+    # Telegram 限制按解析 HTML 后的 UTF-16 文本计算。
+    return utf16_len(html.unescape(re.sub(r'<[^>]*>', '', text)))
 
 def link(url, label):
     return f'<a href="{html.escape(url, quote=True)}">{esc(label)}</a>'
@@ -81,6 +99,7 @@ class Telegram:
     def __init__(self, token, chat, thread):
         self.base = 'https://api.telegram.org/bot' + token + '/'
         self.fields = {'chat_id': chat}
+        thread = thread.strip()
         if thread:
             if not thread.isdecimal() or int(thread) <= 0:
                 raise Error('TELEGRAM_THREAD_ID 必须为正整数')
@@ -90,17 +109,36 @@ class Telegram:
         if not response.get('ok'):
             raise Error('Telegram API 拒绝请求，请检查频道权限与 topic 配置')
     def message(self, text):
+        if text_len(text) > 4096:
+            raise Error('Telegram 消息超过 4096 UTF-16')
         fields = dict(self.fields, text=text, parse_mode='HTML', disable_web_page_preview='true')
         self.call('sendMessage', urllib.parse.urlencode(fields).encode(), 'application/x-www-form-urlencoded')
-    def document(self, name, content):
-        if len(content) > 50*MIB:
-            raise Error('Telegram 文件超过 50 MiB')
+    def multipart(self, method, fields, files):
         boundary = uuid.uuid4().hex
         parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode()
-                 for key, value in self.fields.items()]
-        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="document"; filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode())
-        parts.extend((content, f'\r\n--{boundary}--\r\n'.encode()))
-        self.call('sendDocument', b''.join(parts), 'multipart/form-data; boundary=' + boundary)
+                 for key, value in dict(self.fields, **fields).items()]
+        for key, name, content in files:
+            if not PACKAGE.fullmatch(name):
+                raise Error('Telegram 文件名不是安装包')
+            if len(content) > 50*MIB:
+                raise Error('Telegram 文件超过 50 MiB')
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"; filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode())
+            parts.extend((content, b'\r\n'))
+        parts.append(f'--{boundary}--\r\n'.encode())
+        self.call(method, b''.join(parts), 'multipart/form-data; boundary=' + boundary)
+    def document(self, name, content, caption):
+        if text_len(caption) > 1024:
+            raise Error('Telegram caption 超过 1024 UTF-16')
+        self.multipart('sendDocument', {'caption': caption, 'parse_mode': 'HTML'}, [('document', name, content)])
+    def album(self, files, caption):
+        if not 2 <= len(files) <= 10:
+            raise Error('Telegram album 需要 2–10 个文件')
+        if text_len(caption) > 1024:
+            raise Error('Telegram caption 超过 1024 UTF-16')
+        media = [{'type': 'document', 'media': f'attach://file{i}'} for i in range(len(files))]
+        media[0].update(caption=caption, parse_mode='HTML')
+        self.multipart('sendMediaGroup', {'media': json.dumps(media, ensure_ascii=False)},
+                       [(f'file{i}', name, content) for i, (name, content) in enumerate(files)])
 
 def package_files(data):
     # 只读取外层扁平 ZIP；内层安装包为不透明数据，不解压、不执行。
@@ -138,9 +176,10 @@ def package_files(data):
                         if name in hashes and hashes[name] != digest.lower():
                             raise Error('SHA256 记录冲突')
                         hashes[name] = digest.lower()
-                elif hashes.get(item.filename) != hashlib.sha256(content).hexdigest():
-                    raise Error('安装包 SHA256 缺失或校验失败')
-                files.append((item.filename, content))
+                else:
+                    if hashes.get(item.filename) != hashlib.sha256(content).hexdigest():
+                        raise Error('安装包 SHA256 缺失或校验失败')
+                    files.append((item.filename, content))
             return files, skipped
     except (zipfile.BadZipFile, UnicodeError, RuntimeError, NotImplementedError):
         raise Error('artifact ZIP 或校验文件无效') from None
@@ -152,6 +191,57 @@ def trusted(run, repo, default_branch):
             and (run.get('head_repository') or {}).get('full_name') == repo
             and run.get('conclusion') in ('success', 'failure', 'cancelled'))
 
+def notification_text(run, repo, commit, jobs, artifacts, uploaded, notes, limit):
+    run_id, attempt = int(run['id']), int(run.get('run_attempt', 1))
+    sha = run['head_sha']
+    base = 'https://github.com/' + repo
+    run_url = f'{base}/actions/runs/{run_id}/attempts/{attempt}'
+    meta = commit['commit']
+    parent = commit.get('parents', [])
+    compare = f"{base}/compare/{parent[0]['sha']}...{sha}" if parent else f'{base}/commit/{sha}'
+    start = datetime.datetime.fromisoformat(run['run_started_at'].replace('Z', '+00:00'))
+    end = datetime.datetime.fromisoformat(run['updated_at'].replace('Z', '+00:00'))
+    seconds = max(0, int((end-start).total_seconds()))
+    status = {'success': '成功 / SUCCESS', 'failure': '失败 / FAILURE', 'cancelled': '取消 / CANCELLED'}[run['conclusion']]
+    core = (f'<b>Kernel CI/CD — {status}</b>\n'
+            f"Branch: {esc(run.get('head_branch') or 'tag', 100)} · Duration: {seconds//60}m {seconds%60}s\n"
+            f'Commit: <code>{sha}</code>\n'
+            f'{link(base + "/commit/" + sha, "Commit")} · {link(compare, "Compare")} · {link(run_url, "Logs")}\n')
+    artifact_url = f'{base}/actions/runs/{run_id}#artifacts'
+    artifact_lines = []
+    for artifact in artifacts:
+        url = f"{base}/actions/runs/{run_id}/artifacts/{int(artifact['id'])}"
+        state = ' · 过期 / expired' if artifact.get('expired') else ''
+        if int(artifact['size_in_bytes']) > 200*MIB:
+            state += ' · 超限 / oversize'
+        artifact_lines.append(f"• {link(url, artifact['name'])}{state}\n")
+    footer = (f'Packages: {uploaded}/4 · SHA256/symbols/logs 仅链接\n'
+              'GitHub 下载需登录，受保留期限限制\n')
+    artifacts_text = '<b>Artifacts</b>\n' + ''.join(artifact_lines)
+    # 优先保留状态、完整 commit 与所有产物链接；无法容纳时使用运行总产物入口。
+    message = meta['message'].splitlines()
+    title = message[0] if message else ''
+    summary_min = 'Summary: ' + esc(title, 24) + '\n'
+    if text_len(core + summary_min + artifacts_text + footer) > limit:
+        artifacts_text = link(artifact_url, f'全部产物 / All artifacts ({len(artifacts)})') + '\n'
+    text = core + artifacts_text + footer
+    remaining = limit - text_len(text)
+    if remaining > len('Summary: \n'):
+        summary = 'Summary: ' + esc(title, min(300, remaining - len('Summary: \n'))) + '\n'
+        text = core + summary + artifacts_text + footer
+    # 不下载日志正文，仅报告 job/step 名称和状态，避免转发敏感日志。
+    details = list(notes)
+    failed = [j for j in jobs if j.get('conclusion') in ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required')]
+    for job in failed[:4]:
+        job_url = f"{base}/actions/runs/{run_id}/job/{int(job['id'])}"
+        details.append(f"• {link(job_url, job['name'])}: {esc(job['conclusion'], 30)}")
+        for step in [s for s in job.get('steps', []) if s.get('conclusion') in ('failure', 'cancelled')][:3]:
+            details.append(f"  ↳ {esc(step['name'], 100)} ({esc(step['conclusion'], 30)})")
+    for detail in details:
+        if text_len(text + detail + '\n') <= limit:
+            text += detail + '\n'
+    return text
+
 def notify(event, repo, gh, tg):
     run = event['workflow_run']
     if not trusted(run, repo, event.get('repository', {}).get('default_branch')):
@@ -161,56 +251,29 @@ def notify(event, repo, gh, tg):
     sha = run['head_sha']
     if not re.fullmatch(r'[a-fA-F0-9]{40}', sha):
         raise Error('运行 SHA 无效')
-    base = 'https://github.com/' + repo
-    run_url = f'{base}/actions/runs/{run_id}/attempts/{attempt}'
     commit = gh.get('/commits/' + sha)
     jobs = gh.pages(f'/actions/runs/{run_id}/attempts/{attempt}/jobs', 'jobs')
     artifacts = gh.pages(f'/actions/runs/{run_id}/artifacts', 'artifacts')
-    meta = commit['commit']
-    parent = commit.get('parents', [])
-    compare = f"{base}/compare/{parent[0]['sha']}...{sha}" if parent else f'{base}/commit/{sha}'
-    start = datetime.datetime.fromisoformat(run['run_started_at'].replace('Z', '+00:00'))
-    end = datetime.datetime.fromisoformat(run['updated_at'].replace('Z', '+00:00'))
-    seconds = max(0, int((end-start).total_seconds()))
-    status = {'success': '成功 / SUCCESS', 'failure': '失败 / FAILURE', 'cancelled': '取消 / CANCELLED'}[run['conclusion']]
-    text = (f'<b>Kernel CI/CD — {status}</b>\n<b>仓库 / Repository:</b> {esc(repo)}\n'
-            f"<b>分支 / Branch:</b> {esc(run.get('head_branch') or 'tag', 100)}\n"
-            f'<b>运行 / Run:</b> {link(run_url, str(run_id))} · attempt {attempt}\n'
-            f'<b>耗时 / Duration:</b> {seconds//60}m {seconds%60}s\n\n<b>提交 / Commit</b>\n'
-            f"{esc(meta['message'].splitlines()[0], 300)}\n<b>作者 / Author:</b> {esc(meta['author']['name'], 100)}\n"
-            f'<code>{sha}</code>\n{link(base + "/commit/" + sha, "Commit")} · '
-            f'{link(compare, "比较 / Compare (parent → HEAD)")}\n\n<b>错误摘要 / Failure summary</b>\n')
-    # 不下载日志正文，仅报告 job/step 名称和状态，避免转发敏感日志。
-    failed = [j for j in jobs if j.get('conclusion') in ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required')]
-    for job in failed[:4]:
-        job_url = f"{base}/actions/runs/{run_id}/job/{int(job['id'])}"
-        text += f"• {link(job_url, job['name'])}: {esc(job['conclusion'], 30)}\n"
-        for step in [s for s in job.get('steps', []) if s.get('conclusion') in ('failure', 'cancelled')][:3]:
-            text += f"  ↳ {esc(step['name'], 100)} ({esc(step['conclusion'], 30)})\n"
-    if not failed:
-        text += '无失败任务 / No failed jobs\n'
-    tg.message(text + '日志原文不转发 / Raw logs withheld\n' + link(run_url, '完整日志 / Logs'))
-    tg.message('<b>构建产物 / Artifacts</b>\n安装包与 SHA256 优先上传；符号、日志、原始镜像仅链接。\nGitHub 下载需要登录并受保留期限限制 / Sign-in and retention apply.')
-    count = 0
+    files, notes, seen = [], [], set()
     for artifact in artifacts:
-        url = f"{base}/actions/runs/{run_id}/artifacts/{int(artifact['id'])}"
-        expired = artifact.get('expired', False)
-        tg.message(f"• {link(url, artifact['name'])}\n大小 / Size: {int(artifact['size_in_bytes'])/MIB:.1f} MiB\n"
-                   f"过期 / Expired: {'是 / yes' if expired else '否 / no'} · {esc(artifact.get('expires_at', 'unknown'), 40)}")
-        if (run['conclusion'] != 'success' or expired or artifact['name'] not in
-                (f'miro-kernel-ultra-release-{run_id}', f'miro-kernel-ultra-debug-{run_id}')):
+        if (run['conclusion'] != 'success' or artifact.get('expired') or artifact['name'] not in
+                (f'miro-kernel-ultra-release-{run_id}', f'miro-kernel-ultra-debug-{run_id}')
+                or int(artifact['size_in_bytes']) > 200*MIB or len(files) >= 4):
             continue
-        if artifact['size_in_bytes'] > 200*MIB:
-            tg.message('发布包 artifact 超过 200 MiB 下载上限，仅提供链接 / Download limit exceeded.')
-            continue
-        files, skipped = package_files(gh.download(artifact['id']))
-        for name, content in files:
-            tg.document(name, content)
-            count += bool(PACKAGE.fullmatch(name))
+        packages, skipped = package_files(gh.download(artifact['id']))
+        for name, content in packages:
+            if name not in seen and len(files) < 4:
+                files.append((name, content))
+                seen.add(name)
         for name in skipped:
-            tg.message(f'{esc(name)} 超过 50 MiB，仅提供 {link(url, "下载 / Download")}。')
-    if run['conclusion'] == 'success':
-        tg.message(f'<b>安装包上传 / Packages uploaded:</b> {count}/4\n缺失、过期或超限的包请查看 artifact 链接 / See artifact links for remaining packages.')
+            notes.append(f'{esc(name)} 超过 50 MiB，仅提供 artifact 链接')
+    text = notification_text(run, repo, commit, jobs, artifacts, len(files), notes, 1024 if files else 4096)
+    if len(files) >= 2:
+        tg.album(files, text)
+    elif files:
+        tg.document(*files[0], text)
+    else:
+        tg.message(text)
 
 def main():
     if sys.argv[1:] == ['--self-test']:

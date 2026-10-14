@@ -9,6 +9,8 @@ obj-$(CONFIG_ANDROID_DEBUG_SYMBOLS)	+= android_debug_symbols.o
 obj-$(CONFIG_ANDROID_VENDOR_HOOKS) += vendor_hooks.o
 obj-$(CONFIG_ANDROID_DEBUG_KINFO)	+= debug_kinfo.o
 obj-$(CONFIG_ANDROID_BINDER_IPC_RUST)   += rust_binder.o
+obj-$(CONFIG_REKERNEL) += rekernel.o
+rekernel-y := rekernel_main.o rekernel_binder.o rekernel_signal.o rekernel_netlink.o rekernel_netfilter.o
 
 rust_binder-objs := binder/rust_binder.o
 ifeq ($(CONFIG_ANDROID_BINDERFS_RUST),y)
