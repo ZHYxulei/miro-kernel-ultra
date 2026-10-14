@@ -33,7 +33,7 @@ jobs:
       symbols_archive: ${{ steps.build-id.outputs.symbols_archive }}
       symbols_archive_debug: ${{ steps.build-id.outputs.symbols_archive_debug }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install YAML parser
@@ -82,7 +82,7 @@ jobs:
       kpatch_zip: ${{ needs.preflight.outputs.kpatch_zip }}
     # 仅复用步骤定义；执行环境、缓存、产物仍属于各自独立的 job。
     steps: &build-steps
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -114,7 +114,7 @@ jobs:
           free -h
 
       # 分 variant 保存及恢复 ccache，避免两个 runner 并发写入同一 key。
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .ccache
           key: ccache-${{ env.BUILD_VARIANT }}-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/gki_defconfig', 'arch/arm64/configs/vendor/*.config', 'arch/arm64/configs/droidspaces.fragment') }}-${{ github.sha }}
@@ -123,7 +123,7 @@ jobs:
             ccache-${{ env.BUILD_VARIANT }}-${{ runner.os }}-
 
       - name: Cache KPatch toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: out/kpatch-toolchain
           key: kpatch-toolchain-12.2.rel1
@@ -156,7 +156,7 @@ jobs:
           cp -f KPatch-Next/tools/kptools ci-kernel/KPatch-Next/tools/
 
       - name: Upload kernel outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: miro-kernel-ultra-kernel-${{ env.BUILD_VARIANT }}-${{ github.run_id }}
           path: ci-kernel/
@@ -188,7 +188,7 @@ jobs:
           ( cd ci-symbols && sha256sum "${sums_files[@]}" > "${sums_name}" )
 
       - name: Upload debug symbols archives
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: miro-kernel-ultra-symbols-${{ env.BUILD_VARIANT }}-${{ github.run_id }}
           path: ci-symbols/
@@ -214,7 +214,7 @@ jobs:
 
       - name: Upload build logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-logs-${{ env.BUILD_VARIANT }}-${{ github.run_id }}
           path: ci-logs/
@@ -258,7 +258,7 @@ jobs:
       MODULES_REF_DIR: ci-kernel/out/modules_install_release
       KPATCH_TOOLS: ci-kernel/KPatch-Next/tools/kptools
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: true
           persist-credentials: false
@@ -268,7 +268,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zip unzip
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-kernel-release-${{ github.run_id }}
           path: ci-kernel
@@ -302,7 +302,7 @@ jobs:
           ( cd ci-release && sha256sum "${kpatch_files[@]}" > SHA256SUMS-kpatch-exp )
 
       - name: Upload release packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: miro-kernel-ultra-release-${{ github.run_id }}
           path: ci-release/
@@ -324,7 +324,7 @@ jobs:
       MODULES_REF_DIR: ci-kernel/out-debug/modules_install
       KPATCH_TOOLS: ci-kernel/KPatch-Next/tools/kptools
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: true
           persist-credentials: false
@@ -334,7 +334,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zip unzip
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-kernel-debug-${{ github.run_id }}
           path: ci-kernel
@@ -356,7 +356,7 @@ jobs:
           ( cd ci-debug && sha256sum "${ANYKERNEL3_KPATCH_DEBUG_ZIP}" > SHA256SUMS-debug-kpatch-exp )
 
       - name: Upload debug packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: miro-kernel-ultra-debug-${{ github.run_id }}
           path: ci-debug/
@@ -374,7 +374,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -383,12 +383,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm clang lld cpio unzip
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-release-${{ github.run_id }}
           path: smoke-release
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-debug-${{ github.run_id }}
           path: smoke-debug
@@ -413,28 +413,28 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-release-${{ github.run_id }}
           path: release-assets/release
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-debug-${{ github.run_id }}
           path: release-assets/debug
 
       # 文件名互不冲突，两份 symbols 下载到同一目录供发布使用。
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-symbols-release-${{ github.run_id }}
           path: release-assets/symbols
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: miro-kernel-ultra-symbols-debug-${{ github.run_id }}
           path: release-assets/symbols
