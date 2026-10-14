@@ -203,10 +203,17 @@ def notification_text(run, repo, commit, jobs, artifacts, uploaded, notes, limit
     end = datetime.datetime.fromisoformat(run['updated_at'].replace('Z', '+00:00'))
     seconds = max(0, int((end-start).total_seconds()))
     status = {'success': '成功 / SUCCESS', 'failure': '失败 / FAILURE', 'cancelled': '取消 / CANCELLED'}[run['conclusion']]
-    core = (f'<b>Kernel CI/CD — {status}</b>\n'
-            f"Branch: {esc(run.get('head_branch') or 'tag', 100)} · Duration: {seconds//60}m {seconds%60}s\n"
-            f'Commit: <code>{sha}</code>\n'
-            f'{link(base + "/commit/" + sha, "Commit")} · {link(compare, "Compare")} · {link(run_url, "Logs")}\n')
+    # Telegram 不支持 HTML table，以等宽字段表展示构建信息。
+    branch = str(run.get('head_branch') or 'tag').replace('\n', ' ').replace('\r', ' ')
+    author = str(meta.get('author', {}).get('name', '未知')).replace('\n', ' ').replace('\r', ' ')
+    core = (f'<b>miro-kernel-ultra — {status}</b>\n'
+            '<pre>'
+            f"Branch    │ {esc(branch, 48)}\n"
+            f"Duration  │ {seconds//60}m {seconds%60}s\n"
+            f"Build     │ #{run_id} / attempt {attempt}\n"
+            f"Packages  │ {uploaded}/4\n"
+            '</pre>\n'
+            f'{link(run_url, "Logs")} · {link(compare, "Compare")}\n')
     artifact_url = f'{base}/actions/runs/{run_id}#artifacts'
     artifact_lines = []
     for artifact in artifacts:
@@ -221,14 +228,17 @@ def notification_text(run, repo, commit, jobs, artifacts, uploaded, notes, limit
     # 优先保留状态、完整 commit 与所有产物链接；无法容纳时使用运行总产物入口。
     message = meta['message'].splitlines()
     title = message[0] if message else ''
-    summary_min = 'Summary: ' + esc(title, 24) + '\n'
-    if text_len(core + summary_min + artifacts_text + footer) > limit:
+    commit_header = (f'\n<b>Commit 信息</b>\n'
+                     f'{link(base + "/commit/" + sha, "Commit")} · <code>{sha}</code>\n'
+                     f'Author: {esc(author, 60)}\n')
+    summary_min = commit_header + 'Summary: ' + esc(title, 24) + '\n'
+    # 为下方提交说明预留空间，产物过多时保留统一下载入口。
+    if text_len(core + summary_min + artifacts_text + footer) + 160 > limit:
         artifacts_text = link(artifact_url, f'全部产物 / All artifacts ({len(artifacts)})') + '\n'
-    text = core + artifacts_text + footer
-    remaining = limit - text_len(text)
-    if remaining > len('Summary: \n'):
-        summary = 'Summary: ' + esc(title, min(300, remaining - len('Summary: \n'))) + '\n'
-        text = core + summary + artifacts_text + footer
+    text = core + artifacts_text + footer + commit_header
+    remaining = limit - text_len(text) - len('Summary: \n')
+    if remaining > 0:
+        text += 'Summary: ' + esc(meta['message'], min(700, remaining)) + '\n'
     # 不下载日志正文，仅报告 job/step 名称和状态，避免转发敏感日志。
     details = list(notes)
     failed = [j for j in jobs if j.get('conclusion') in ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required')]

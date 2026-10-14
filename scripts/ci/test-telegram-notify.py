@@ -77,7 +77,7 @@ class SafeHTML(HTMLParser):
         self.stack = []
         self.text = ''
     def handle_starttag(self, tag, attrs):
-        assert tag in ('a', 'b', 'code'), tag
+        assert tag in ('a', 'b', 'code', 'pre'), tag
         if tag == 'a':
             assert len(attrs) == 1 and attrs[0][0] == 'href'
             assert attrs[0][1].startswith('https://github.com/')
@@ -150,6 +150,18 @@ class Tests(unittest.TestCase):
             self.assertIn(f"/artifacts/{item['id']}", text)
         self.assert_html(text, 1024)
         gh.download.assert_called_once_with(10)
+
+    def test_table_and_commit_body_at_bottom(self):
+        gh = github([artifact()], message='feat: update kernel\n\n详细的提交说明 & 验证结果')
+        text = n.notification_text(event()['workflow_run'], REPO, gh.get.return_value,
+                                   [], [artifact()], 4, [], 1024)
+        self.assertIn('<pre>', text)
+        self.assertIn('Branch    │ main', text)
+        self.assertIn('Packages  │ 4/4', text)
+        self.assertIn('Author: A&amp;B', text)
+        self.assertIn('详细的提交说明 &amp; 验证结果', text)
+        self.assertLess(text.index('<b>Artifacts</b>'), text.index('<b>Commit 信息</b>'))
+        self.assert_html(text, 1024)
 
     def test_album_bounds(self):
         tg = n.Telegram('dummy', '-123', '')
