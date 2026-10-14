@@ -2,5 +2,21 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Sphinx 2.x 的文档适配需单独验证，暂只接受 2.x 更新",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["Documentation/sphinx/requirements.txt"],
+      "matchPackageNames": ["Sphinx"],
+      "allowedVersions": "<3"
+    },
+    {
+      "description": "Sphinx 2.x 不兼容 Jinja2 3.1，禁止自动放宽现有上限",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["Documentation/sphinx/requirements.txt"],
+      "matchPackageNames": ["jinja2"],
+      "enabled": false
+    }
   ]
 }
