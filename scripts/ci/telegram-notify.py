@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """标准库 Telegram 通知器。"""
+import base64
 import datetime
 import hashlib
-import html
 import io
 import json
 import os
@@ -90,16 +90,6 @@ def truncate(text, limit):
         used += size
     return ''.join(result) + ('…' if limit else '')
 
-def esc(value, limit=240):
-    return html.escape(truncate(str(value), limit), quote=True)
-
-def text_len(text):
-    # Telegram 限制按解析 HTML 后的 UTF-16 文本计算。
-    return utf16_len(html.unescape(re.sub(r'<[^>]*>', '', text)))
-
-def link(url, label):
-    return f'<a href="{html.escape(url, quote=True)}">{esc(label)}</a>'
-
 class Telegram:
     def __init__(self, token, chat, thread):
         self.base = 'https://api.telegram.org/bot' + token + '/'
@@ -113,11 +103,6 @@ class Telegram:
         response = json.loads(http(self.base + method, {'Content-Type': content_type}, body))
         if not response.get('ok'):
             raise Error('Telegram API 拒绝请求，请检查频道权限与 topic 配置')
-    def message(self, text):
-        if text_len(text) > 4096:
-            raise Error('Telegram 消息超过 4096 UTF-16')
-        fields = dict(self.fields, text=text, parse_mode='HTML', disable_web_page_preview='true')
-        self.call('sendMessage', urllib.parse.urlencode(fields).encode(), 'application/x-www-form-urlencoded')
     def multipart(self, method, fields, files):
         boundary = uuid.uuid4().hex
         parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode()
@@ -131,18 +116,15 @@ class Telegram:
             parts.extend((content, b'\r\n'))
         parts.append(f'--{boundary}--\r\n'.encode())
         self.call(method, b''.join(parts), 'multipart/form-data; boundary=' + boundary)
-    def document(self, name, content, caption):
-        if text_len(caption) > 1024:
-            raise Error('Telegram caption 超过 1024 UTF-16')
-        self.multipart('sendDocument', {'caption': caption, 'parse_mode': 'HTML'}, [('document', name, content)])
-    def album(self, files, caption):
-        if not 2 <= len(files) <= 10:
-            raise Error('Telegram album 需要 2–10 个文件')
-        if text_len(caption) > 1024:
-            raise Error('Telegram caption 超过 1024 UTF-16')
-        media = [{'type': 'document', 'media': f'attach://file{i}'} for i in range(len(files))]
-        media[0].update(caption=caption, parse_mode='HTML')
-        self.multipart('sendMediaGroup', {'media': json.dumps(media, ensure_ascii=False)},
+    def rich(self, blocks, files):
+        # Bot API 10.3 InputRichMessage / InputRichBlockDocument / RichBlockTableCell.
+        if len(files) > 2:
+            raise Error('通知最多上传两个 release 文件')
+        payload = {'blocks': blocks, 'skip_entity_detection': True}
+        encoded = json.dumps(payload, ensure_ascii=False)
+        if len(encoded.encode('utf-8')) > 32768:
+            raise Error('Telegram 富消息超过安全文本预算')
+        self.multipart('sendRichMessage', {'rich_message': encoded},
                        [(f'file{i}', name, content) for i, (name, content) in enumerate(files)])
 
 def package_files(data):
@@ -196,79 +178,129 @@ def trusted(run, repo, default_branch):
             and (run.get('head_repository') or {}).get('full_name') == repo
             and run.get('conclusion') in ('success', 'failure', 'cancelled'))
 
-def notification_text(run, repo, commit, jobs, artifacts, uploaded, notes, limit):
+def source_snapshot(gh, sha):
+    # 所有读取均固定到被通知的 SHA；绝不读取通知工作流 checkout 的配置。
+    def content(path):
+        try:
+            result = gh.get('/contents/' + path + '?ref=' + sha)
+            if not isinstance(result, dict):
+                return {}, ''
+            text = (base64.b64decode(result['content']).decode('utf-8')
+                    if result.get('encoding') == 'base64' else '')
+            return result, text
+        except HTTPError as exc:
+            if exc.status != 404:
+                raise
+            return {}, ''
+
+    _, makefile = content('Makefile')
+    version = dict(re.findall(r'^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[ \t]*=[ \t]*(.*?)[ \t]*$', makefile, re.M))
+    kernel = ('.'.join(version[key] for key in ('VERSION', 'PATCHLEVEL', 'SUBLEVEL'))
+              + version.get('EXTRAVERSION', '') if all(key in version for key in
+                ('VERSION', 'PATCHLEVEL', 'SUBLEVEL')) else '未知')
+    config, complete = {}, True
+    for path in ('arch/arm64/configs/gki_defconfig', 'arch/arm64/configs/vendor/sun_perf.config',
+                 'arch/arm64/configs/vendor/miro_perf.config', 'arch/arm64/configs/droidspaces.fragment'):
+        _, text = content(path)
+        complete = complete and bool(text)
+        for line in text.splitlines():
+            match = re.fullmatch(r'(CONFIG_\w+)=(.*)|# (CONFIG_\w+) is not set', line)
+            if match:
+                key, value, disabled = match.groups()
+                key, value = key or disabled, value if key else 'n'
+                # build.sh 使用 merge_config.sh -y，内建配置优先于模块。
+                if config.get(key) != 'y' or value != 'm':
+                    config[key] = value
+    def state(key):
+        value = config.get(key) if complete else None
+        return {'y': '启用 (y)', 'm': '模块 (m)', 'n': '禁用 (n)'}.get(value, '未知 / 未显式配置')
+    submodule, _ = content('KernelSU')
+    baka_sha = submodule.get('sha', '')
+    baka = (baka_sha if re.fullmatch(r'[a-fA-F0-9]{40}', baka_sha) else '')
+    kpatch, _ = content('KPatch-Next')
+    kpatch_sha = kpatch.get('sha', '')
+    _, susfs = content('include/linux/susfs.h')
+    susfs_version = re.search(r'^#define\s+SUSFS_VERSION\s+"([^"]+)"', susfs, re.M)
+    return {'kernel': kernel, 'lto': ('ThinLTO' if config.get('CONFIG_LTO_CLANG_THIN') == 'y'
+            else 'Full LTO' if config.get('CONFIG_LTO_CLANG_FULL') == 'y'
+            else '无 LTO（显式配置）' if config.get('CONFIG_LTO_NONE') == 'y' else '未知 / 未显式配置')
+            if complete else '未知（配置缺失）',
+            'features': [(name, state(key)) for name, key in (
+                ('BakaSU', 'CONFIG_KSU'), ('SUSFS', 'CONFIG_KSU_SUSFS'),
+                ('Re:Kernel', 'CONFIG_REKERNEL'), ('NTsync', 'CONFIG_NTSYNC'),
+                ('MGLRU', 'CONFIG_LRU_GEN'), ('MGLRU 默认启用', 'CONFIG_LRU_GEN_ENABLED'))],
+            'kpm': ('普通版无；KPatch 实验补丁源码 ' + kpatch_sha[:12]
+                    if re.fullmatch(r'[a-fA-F0-9]{40}', kpatch_sha) else '未知（KPatch 源码记录缺失）'),
+            'baka': baka, 'susfs': susfs_version.group(1) if susfs_version else '未知'}
+
+
+def rich_link(url, text):
+    return {'type': 'url', 'text': truncate(str(text), 160), 'url': url}
+
+
+def rich_table(rows):
+    return {'type': 'table', 'cells': [[{'align': 'left', 'valign': 'top',
+            'text': truncate(str(value), 240)} for value in row] for row in rows]}
+
+
+def notification_blocks(run, repo, commit, jobs, artifacts, files, notes, snapshot):
     run_id, attempt = int(run['id']), int(run.get('run_attempt', 1))
     sha = run['head_sha']
     base = 'https://github.com/' + repo
     run_url = f'{base}/actions/runs/{run_id}/attempts/{attempt}'
-    meta = commit['commit']
     parent = commit.get('parents', [])
     compare = f"{base}/compare/{parent[0]['sha']}...{sha}" if parent else f'{base}/commit/{sha}'
+    # 附件在最前；普通版排在 KPatch 实验版之前。
+    blocks = [{'type': 'document', 'document': {'type': 'document', 'media': f'attach://file{i}'}}
+              for i in range(len(files))]
+    blocks.append(rich_table([
+        ('Kernel', snapshot['kernel']), ('Source', sha),
+        ('Branch', run.get('head_branch') or '未知'),
+        ('Toolchain', '未知（实际编译版本请查看 Workflow 日志）'), ('LTO', snapshot['lto'])]))
+    blocks.append(rich_table([('功能（源码配置，非启动验证）', '状态（普通 / KPatch 共用源码）'),
+                              *snapshot['features'], ('KPM', snapshot['kpm'])]))
+    baka = snapshot['baka']
+    blocks.extend([
+        {'type': 'paragraph', 'text': rich_link('https://github.com/Baka-SU/BakaSU' +
+            ('/tree/' + baka if baka else ''), 'BakaSU: ' + (baka[:12] + '（固定源码 SHA）' if baka else '未知'))},
+        {'type': 'paragraph', 'text': rich_link(f'{base}/blob/{sha}/include/linux/susfs.h',
+                                               'SUSFS: ' + snapshot['susfs'])}])
     start = datetime.datetime.fromisoformat(run['run_started_at'].replace('Z', '+00:00'))
     end = datetime.datetime.fromisoformat(run['updated_at'].replace('Z', '+00:00'))
-    seconds = max(0, int((end-start).total_seconds()))
+    seconds = max(0, int((end - start).total_seconds()))
     status = {'success': '成功 / SUCCESS', 'failure': '失败 / FAILURE', 'cancelled': '取消 / CANCELLED'}[run['conclusion']]
-    # Telegram 不支持 HTML table，以等宽字段表展示构建信息。
-    branch = str(run.get('head_branch') or 'tag').replace('\n', ' ').replace('\r', ' ')
-    author = str(meta.get('author', {}).get('name', '未知')).replace('\n', ' ').replace('\r', ' ')
-    core = (f'<b>miro-kernel-ultra — {status}</b>\n'
-            '<pre>'
-            f"Branch    │ {esc(branch, 48)}\n"
-            f"Duration  │ {seconds//60}m {seconds%60}s\n"
-            f"Build     │ #{run_id} / attempt {attempt}\n"
-            f"Packages  │ {uploaded}/2 release\n"
-            '</pre>\n'
-            f'{link(run_url, "Logs")} · {link(compare, "Compare")}\n')
-    artifact_url = f'{base}/actions/runs/{run_id}#artifacts'
-    artifact_lines = []
-    for artifact in artifacts:
-        url = f"{base}/actions/runs/{run_id}/artifacts/{int(artifact['id'])}"
-        state = ' · 仅下载链接' if artifact['name'] == f'miro-kernel-ultra-debug-{run_id}' else ''
-        if artifact.get('expired'):
-            state += ' · 过期 / expired'
-        if int(artifact['size_in_bytes']) > 200*MIB:
-            state += ' · 超限 / oversize'
-        artifact_lines.append(f"• {link(url, artifact['name'])}{state}\n")
-    footer = ('Debug/SHA256/symbols/logs 仅链接；GitHub 下载需登录，有保留期限\n')
-    features = ('\n<b>功能表（源码集成，非设备验证）</b>\n<pre>'
-                '功能          │ 普通版 │ KPatch版\n'
-                'BakaSU/SUSFS  │ 内置   │ 内置\n'
-                'Re:Kernel     │ 内置   │ 内置\n'
-                'NTsync/MGLRU  │ 内置   │ 内置\n'
-                'KPM           │ 无     │ 实验\n'
-                '</pre>')
-    artifacts_text = '<b>Artifacts</b>\n' + ''.join(artifact_lines)
-    # 优先保留状态、完整 commit 与所有产物链接；无法容纳时使用运行总产物入口。
-    message = meta['message'].splitlines()
-    title = message[0] if message else ''
-    commit_header = (f'\n<b>Commit 信息</b>\n'
-                     f'{link(base + "/commit/" + sha, "Commit")} · <code>{sha}</code>\n'
-                     f'Author: {esc(author, 60)}\n')
-    summary_min = commit_header + 'Summary: ' + esc(title, 24) + '\n'
-    # 为下方提交说明预留空间，产物过多时保留统一下载入口。
-    if text_len(core + summary_min + artifacts_text + footer + features) + 160 > limit:
-        artifacts_text = link(artifact_url, f'全部产物 / All artifacts ({len(artifacts)})') + '\n'
-        for artifact in artifacts:
-            if artifact['name'] == f'miro-kernel-ultra-debug-{run_id}':
-                artifacts_text += link(f"{base}/actions/runs/{run_id}/artifacts/{int(artifact['id'])}",
-                                       'Debug 下载（仅链接）') + '\n'
-                break
-    text = core + artifacts_text + footer + features + commit_header
-    remaining = limit - text_len(text) - len('Summary: \n')
-    if remaining > 0:
-        text += 'Summary: ' + esc(meta['message'], min(700, remaining)) + '\n'
-    # 不下载日志正文，仅报告 job/step 名称和状态，避免转发敏感日志。
-    details = list(notes)
-    failed = [j for j in jobs if j.get('conclusion') in ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required')]
-    for job in failed[:4]:
-        job_url = f"{base}/actions/runs/{run_id}/job/{int(job['id'])}"
-        details.append(f"• {link(job_url, job['name'])}: {esc(job['conclusion'], 30)}")
+    blocks.append({'type': 'paragraph', 'text': truncate(
+        f"Branch: {run.get('head_branch') or '未知'} · CI #{run_id} / attempt {attempt} · {status} · "
+        f'{seconds//60}m {seconds%60}s · {len(files)}/2 release', 400)})
+    meta = commit['commit']
+    blocks.append({'type': 'pre', 'text': f"Commit: {sha}\nAuthor: " +
+                   truncate(str(meta.get('author', {}).get('name', '未知')), 100) + '\n\n' +
+                   truncate(meta['message'], 1800)})
+    blocks.extend([{'type': 'paragraph', 'text': rich_link(compare, 'Compare')},
+                   {'type': 'paragraph', 'text': rich_link(run_url, 'Workflow / Logs')}])
+    # 大量产物时保留统一入口和 debug 链接，限制消息总大小。
+    selected = artifacts if len(artifacts) <= 12 else [a for a in artifacts
+                if a['name'] == f'miro-kernel-ultra-debug-{run_id}'][:1]
+    blocks.append({'type': 'paragraph', 'text': rich_link(f'{base}/actions/runs/{run_id}#artifacts',
+                                                       '全部产物 / All artifacts')})
+    for item in selected:
+        state = ' · 仅下载链接'
+        if item.get('expired'):
+            state += ' · expired'
+        if int(item['size_in_bytes']) > 200*MIB:
+            state += ' · oversize'
+        blocks.append({'type': 'paragraph', 'text': rich_link(
+            f"{base}/actions/runs/{run_id}/artifacts/{int(item['id'])}", truncate(item['name'], 100) + state)})
+    blocks.append({'type': 'paragraph', 'text': 'Debug/SHA256/symbols/logs 仅链接；GitHub 下载需登录，有保留期限。源码配置非最终 .config，非启动验证。'})
+    for job in [j for j in jobs if j.get('conclusion') in
+                ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required')][:4]:
+        blocks.append({'type': 'paragraph', 'text': rich_link(
+            f"{base}/actions/runs/{run_id}/job/{int(job['id'])}", f"{job['name']}: {job['conclusion']}")})
         for step in [s for s in job.get('steps', []) if s.get('conclusion') in ('failure', 'cancelled')][:3]:
-            details.append(f"  ↳ {esc(step['name'], 100)} ({esc(step['conclusion'], 30)})")
-    for detail in details:
-        if text_len(text + detail + '\n') <= limit:
-            text += detail + '\n'
-    return text
+            blocks.append({'type': 'paragraph', 'text': truncate(f"{step['name']}: {step['conclusion']}", 160)})
+    blocks.extend({'type': 'paragraph', 'text': truncate(note, 240)} for note in notes[:4])
+    return blocks
+
 
 def notify(event, repo, gh, tg):
     run = event['workflow_run']
@@ -294,25 +326,22 @@ def notify(event, repo, gh, tg):
                 files.append((name, content))
                 seen.add(name)
         for name in skipped:
-            notes.append(f'{esc(name)} 超过 50 MiB，仅提供 artifact 链接')
+            notes.append(f'{name} 超过 50 MiB，仅提供 artifact 链接')
     # 留出 multipart 开销；总请求过大时不拆分刷屏，统一使用下载链接。
     if sum(len(content) for _, content in files) > 49*MIB:
         files = []
         notes.append('安装包合计超过上传预算，仅提供 artifact 下载链接')
-    text = notification_text(run, repo, commit, jobs, artifacts, len(files), notes, 1024 if files else 4096)
+    files.sort(key=lambda item: ('kpatch' in item[0].lower(), item[0]))
+    snapshot = source_snapshot(gh, sha)
+    blocks = notification_blocks(run, repo, commit, jobs, artifacts, files, notes, snapshot)
     try:
-        if len(files) >= 2:
-            tg.album(files, text)
-        elif files:
-            tg.document(*files[0], text)
-        else:
-            tg.message(text)
+        tg.rich(blocks, files)
     except HTTPError as exc:
         if exc.status != 413 or not files:
             raise
-        print('::warning::Telegram 文件上传被拒绝（413），改发单条下载链接通知')
+        print('::warning::Telegram 文件上传被拒绝（413），改发单条下载链接富消息')
         notes.append('文件上传请求过大，仅提供 artifact 下载链接')
-        tg.message(notification_text(run, repo, commit, jobs, artifacts, 0, notes, 4096))
+        tg.rich(notification_blocks(run, repo, commit, jobs, artifacts, [], notes, snapshot), [])
 
 def main():
     if sys.argv[1:] == ['--self-test']:

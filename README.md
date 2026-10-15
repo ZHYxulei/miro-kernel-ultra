@@ -31,7 +31,7 @@
 | NTsync | Linux v6.14 回移植，`CONFIG_NTSYNC=y`；Wine/Android 设备访问待验证 |
 | MGLRU | 已有实现，`CONFIG_LRU_GEN=y` / `CONFIG_LRU_GEN_ENABLED=y`，STATS 关闭 |
 | LZ4KD | 授权依据不足，尚未加入；不替代 LZ4 或 lzo-rle 默认值 |
-| Telegram 构建通知 | 单次 ZIP 媒体组与回退已实现；仅离线测试，未线上验证 |
+| Telegram 构建通知 | 原生富消息、两列表与无附件回退已实现；仅离线测试，未线上验证 |
 | Baseband-guard 基带保护 | 已接入（LSM 模块） |
 | ADIOS I/O 调度器 | 已接入 |
 | TMPFS 完整支持 | 已接入（inode64 + quota） |
@@ -99,12 +99,16 @@ cmdline/bootconfig 伪造、open redirect 和内存映射隐藏等功能。SUSFS
 - **LZ4KD pending**：授权依据不足，尚未加入；保持现有
   [`LZ4`](lib/lz4/) 与 [`zram lzo-rle 默认`](drivers/block/zram/zram_drv.c)，不声称替换或提速。
 - **Telegram 通知**：[`telegram-notify.py`](scripts/ci/telegram-notify.py) 已实现一次
-  `sendMediaGroup` 仅发送 release 普通版与 KPatch 实验版两个安装 ZIP，debug 不下载、不上传，
+  `sendRichMessage`，仅上传 release 普通版与 KPatch 实验版两个安装 ZIP，debug 不下载、不上传，
   仅提供 GitHub artifact 下载链接；symbols、log、SHA 产物也仅给链接。
-  仅首项 caption，按解析后的 UTF-16 code units（symbols）限制为 1024；
-  排列为产物下载链接、功能对照表、commit 作者/SHA/说明。功能表表示源码集成，非设备验证。
-  上传合计超过 49 MiB 或遇到 HTTP 413 时，回退为一条带下载链接的文本通知，不拆分刷屏。
-  1 个文件使用 `sendDocument`，0 个文件或构建失败/取消使用 `sendMessage`。
+  顺序为普通版/KPatch 附件、Kernel/Source/Branch/Toolchain/LTO 原生两列表、功能原生两列表、
+  BakaSU 固定源码 SHA/SUSFS 版本链接、Branch/CI 编号、commit 原生 pre 块、Compare/Workflow/下载链接。
+  Makefile、配置片段、SUSFS 与子模块 SHA 均从被通知 commit 的 GitHub 内容 API 获取，
+  不使用通知工作流 checkout 的配置；状态仅表示源码配置，非最终 `.config` 或启动验证。
+  工具链实际版本未知时明确提示查看日志；BakaSU 使用固定 SHA 而非猜测版本号。
+  富消息 JSON 安全预算为 32 KiB；上传合计超过 49 MiB 或遇到 HTTP 413 时，
+  回退为一条无附件、带下载链接的原生富消息，不拆分刷屏。
+  0/1 个附件及构建失败/取消也统一使用富消息，不再使用 HTML caption 或媒体组。
   [`离线测试`](scripts/ci/test-telegram-notify.py) 与
   [`CI 静态/离线检查`](scripts/ci/check-ci.py) 不等于线上测试，真实发送尚未验证。
 

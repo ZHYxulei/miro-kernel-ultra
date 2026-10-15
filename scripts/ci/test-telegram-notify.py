@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import copy
 import hashlib
 import importlib.util
@@ -8,13 +9,11 @@ import os
 from pathlib import Path
 from email.parser import BytesParser
 from email.policy import default
-from html.parser import HTMLParser
 import stat
 import sys
 import unittest
 from unittest.mock import Mock, patch
 import urllib.error
-import urllib.parse
 import zipfile
 
 sys.dont_write_bytecode = True
@@ -23,6 +22,7 @@ n = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(n)
 REPO = 'owner/kernel'
 NAME = 'miro-kernel-ultra-test.zip'
+KPATCH = 'miro-kernel-ultra-kpatch-exp-test.zip'
 PAYLOAD = b'opaque installation package'
 
 
@@ -57,8 +57,21 @@ def artifact(id=10, name='miro-kernel-ultra-release-12', **changes):
 
 def github(artifacts, jobs=None, message='<script>commit\nbody'):
     gh = Mock()
-    gh.get.return_value = {'commit': {'message': message, 'author': {'name': 'A&B'}},
-                           'parents': [{'sha': 'b' * 40}]}
+    commit = {'commit': {'message': message, 'author': {'name': 'A&B'}},
+              'parents': [{'sha': 'b' * 40}]}
+    def get(path):
+        if path.startswith('/commits/'):
+            return commit
+        assert path.endswith('?ref=' + 'a' * 40), path
+        if '/KernelSU?' in path:
+            return {'sha': 'c' * 40, 'type': 'submodule'}
+        text = ('VERSION = 6\nPATCHLEVEL = 6\nSUBLEVEL = 30\nEXTRAVERSION =\n'
+                if '/Makefile?' in path else '#define SUSFS_VERSION "v2.3.0"\n'
+                if '/susfs.h?' in path else
+                'CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_REKERNEL=y\nCONFIG_NTSYNC=y\n'
+                'CONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y\nCONFIG_LTO_CLANG_THIN=y\n')
+        return {'encoding': 'base64', 'content': base64.b64encode(text.encode()).decode()}
+    gh.get.side_effect = get
     gh.pages.side_effect = [jobs or [], artifacts]
     gh.download.return_value = package()
     return gh
@@ -71,23 +84,8 @@ def multipart(call):
     return method, {p.get_param('name', header='content-disposition'): p for p in parsed.iter_parts()}
 
 
-class SafeHTML(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.stack = []
-        self.text = ''
-    def handle_starttag(self, tag, attrs):
-        assert tag in ('a', 'b', 'code', 'pre'), tag
-        if tag == 'a':
-            assert len(attrs) == 1 and attrs[0][0] == 'href'
-            assert attrs[0][1].startswith('https://github.com/')
-        else:
-            assert not attrs
-        self.stack.append(tag)
-    def handle_endtag(self, tag):
-        assert self.stack.pop() == tag
-    def handle_data(self, data):
-        self.text += data
+def text(blocks):
+    return json.dumps(blocks, ensure_ascii=False)
 
 
 class Tests(unittest.TestCase):
@@ -96,222 +94,164 @@ class Tests(unittest.TestCase):
         self.network.start()
         self.addCleanup(self.network.stop)
 
-    def assert_html(self, text, limit):
-        parser = SafeHTML()
-        parser.feed(text)
-        parser.close()
-        self.assertEqual(parser.stack, [])
-        self.assertLessEqual(len(parser.text.encode('utf-16-le')) // 2, limit)
-        self.assertEqual(n.text_len(text), len(parser.text.encode('utf-16-le')) // 2)
-
-    def test_html_and_topic(self):
-        self.assertEqual(n.esc('<b>"&'), '&lt;b&gt;&quot;&amp;')
-        self.assertIn('&quot;', n.link('https://example.test/"', '<script>'))
+    def test_rich_multipart_order_and_native_text(self):
+        gh = github([artifact(), artifact(11, 'miro-kernel-ultra-debug-12')])
+        gh.download.return_value = package(names=[KPATCH, NAME])
         tg = n.Telegram('dummy-offline', '-123', ' 42 \n')
-        self.assertEqual(tg.fields['message_thread_id'], '42')
-        self.assertNotIn('message_thread_id', n.Telegram('dummy', '-123', ' \t').fields)
-        for thread in ('-1', '0', 'abc'):
-            with self.assertRaises(n.Error):
-                n.Telegram('dummy-offline', '-123', thread)
-        with patch.object(tg, 'call') as call:
-            tg.document(NAME, PAYLOAD, '<b>caption</b>')
-            method, parts = multipart(call.call_args)
-            self.assertEqual(method, 'sendDocument')
-            self.assertEqual(parts['message_thread_id'].get_payload(decode=True), b'42')
-            self.assertEqual(parts['caption'].get_payload(decode=True), b'<b>caption</b>')
-            self.assertEqual(parts['document'].get_payload(decode=True), PAYLOAD)
-
-    def test_album_single_multipart_caption_once(self):
-        names = ['miro-kernel-ultra-test.zip', 'miro-kernel-ultra-kpatch-exp-test.zip']
-        artifacts = [artifact(), artifact(11, 'symbols-12'), artifact(12, 'build-logs-12'), artifact(13, 'SHA256SUMS-12')]
-        gh = github(artifacts)
-        gh.download.return_value = package(names=names)
-        tg = n.Telegram('dummy', '-123', '42')
         with patch.object(tg, 'call') as call:
             n.notify(event(), REPO, gh, tg)
         call.assert_called_once()
         method, parts = multipart(call.call_args)
-        self.assertEqual(method, 'sendMediaGroup')
-        media = json.loads(parts['media'].get_payload(decode=True))
-        self.assertEqual(len(media), 2)
-        self.assertEqual(sum('caption' in item for item in media), 1)
-        self.assertEqual(media[0]['parse_mode'], 'HTML')
-        self.assertNotIn('caption', parts)
-        self.assertEqual(sum(p.get_filename() is not None for p in parts.values()), 2)
-        for i, name in enumerate(sorted(names)):
-            self.assertEqual(media[i]['type'], 'document')
-            self.assertEqual(media[i]['media'], f'attach://file{i}')
+        self.assertEqual(method, 'sendRichMessage')
+        self.assertEqual(parts['message_thread_id'].get_payload(decode=True), b'42')
+        payload = json.loads(parts['rich_message'].get_payload(decode=True))
+        self.assertTrue(payload['skip_entity_detection'])
+        blocks = payload['blocks']
+        self.assertEqual([b['type'] for b in blocks[:8]],
+                         ['document', 'document', 'table', 'table', 'paragraph', 'paragraph', 'paragraph', 'pre'])
+        for i, name in enumerate([NAME, KPATCH]):
+            self.assertEqual(blocks[i]['document'], {'type': 'document', 'media': f'attach://file{i}'})
             self.assertEqual(parts[f'file{i}'].get_filename(), name)
             self.assertEqual(parts[f'file{i}'].get_payload(decode=True), PAYLOAD)
-        text = media[0]['caption']
-        for required in ('SUCCESS', 'main', '1m 2s', 'a' * 40, '&lt;script&gt;commit', 'Compare', 'Logs'):
-            self.assertIn(required, text)
-        for item in artifacts:
-            self.assertIn(f"/artifacts/{item['id']}", text)
-        self.assert_html(text, 1024)
+        self.assertEqual([row[0]['text'] for row in blocks[2]['cells']], ['Kernel', 'Source', 'Branch', 'Toolchain', 'LTO'])
+        self.assertEqual(blocks[2]['cells'][0][1]['text'], '6.6.30')
+        self.assertEqual(blocks[2]['cells'][4][1]['text'], 'ThinLTO')
+        for block in blocks[2:4]:
+            for row in block['cells']:
+                self.assertEqual(len(row), 2)
+                for cell in row:
+                    self.assertEqual((cell['align'], cell['valign']), ('left', 'top'))
+        self.assertIn('<script>commit', blocks[7]['text'])
+        self.assertIn('A&B', blocks[7]['text'])
+        self.assertNotIn('&lt;', text(blocks))
+        self.assertEqual(blocks[8]['text']['text'], 'Compare')
+        self.assertEqual(blocks[9]['text']['text'], 'Workflow / Logs')
+        self.assertIn('/artifacts/11', text(blocks))
+        self.assertIn('非启动验证', text(blocks))
+        self.assertIn('c' * 40, blocks[4]['text']['url'])
         gh.download.assert_called_once_with(10)
 
-    def test_table_and_commit_body_at_bottom(self):
-        gh = github([artifact()], message='feat: update kernel\n\n详细的提交说明 & 验证结果')
-        text = n.notification_text(event()['workflow_run'], REPO, gh.get.return_value,
-                                   [], [artifact()], 2, [], 1024)
-        self.assertIn('<pre>', text)
-        self.assertIn('Branch    │ main', text)
-        self.assertIn('Packages  │ 2/2 release', text)
-        self.assertLess(text.index('<b>Artifacts</b>'), text.index('<b>功能表'))
-        self.assertLess(text.index('<b>功能表'), text.index('<b>Commit 信息</b>'))
-        for feature in ('BakaSU/SUSFS', 'Re:Kernel', 'NTsync/MGLRU', 'KPM', '实验', '非设备验证'):
-            self.assertIn(feature, text)
-        self.assertIn('Author: A&amp;B', text)
-        self.assertIn('详细的提交说明 &amp; 验证结果', text)
-        self.assertLess(text.index('<b>Artifacts</b>'), text.index('<b>Commit 信息</b>'))
-        self.assert_html(text, 1024)
-
-    def test_upload_413_falls_back_once(self):
-        gh, tg = github([artifact()]), Mock()
-        tg.document.side_effect = n.HTTPError(413)
-        n.notify(event(), REPO, gh, tg)
-        tg.document.assert_called_once()
-        tg.message.assert_called_once()
-        text = tg.message.call_args.args[0]
-        self.assertIn('/artifacts/10', text)
-        self.assertIn('Commit 信息', text)
-        self.assert_html(text, 4096)
-        tg.document.side_effect = n.HTTPError(403)
-        with self.assertRaises(n.HTTPError):
-            n.notify(event(), REPO, github([artifact()]), tg)
-        self.assertEqual(tg.message.call_count, 1)
-
-    def test_total_upload_budget(self):
-        gh, tg = github([artifact()]), Mock()
-        with patch.object(n, 'package_files', return_value=([(NAME, b'x' * (50*n.MIB))], [])):
-            n.notify(event(), REPO, gh, tg)
-        tg.album.assert_not_called()
-        tg.document.assert_not_called()
-        tg.message.assert_called_once()
-        self.assertIn('/artifacts/10', tg.message.call_args.args[0])
-
-    def test_album_bounds(self):
-        tg = n.Telegram('dummy', '-123', '')
-        with patch.object(tg, 'call') as call:
-            for count in (2, 10):
-                tg.album([(NAME, PAYLOAD)] * count, 'caption')
-                _, parts = multipart(call.call_args)
-                self.assertEqual(len(json.loads(parts['media'].get_payload(decode=True))), count)
-            for count in (0, 1, 11):
-                with self.assertRaises(n.Error):
-                    tg.album([(NAME, PAYLOAD)] * count, 'caption')
-
-    def test_single_and_zero_fallback(self):
-        for artifacts in ([artifact()], []):
-            gh = github(artifacts)
-            tg = n.Telegram('dummy', '-123', '')
-            with patch.object(tg, 'call') as call:
-                n.notify(event(), REPO, gh, tg)
-            call.assert_called_once()
-            if artifacts:
-                method, parts = multipart(call.call_args)
-                self.assertEqual(method, 'sendDocument')
-                self.assertEqual(sum(p.get_filename() is not None for p in parts.values()), 1)
-                self.assertEqual(parts['document'].get_filename(), NAME)
-                text = parts['caption'].get_payload(decode=True).decode()
-                self.assert_html(text, 1024)
-            else:
-                self.assertEqual(call.call_args.args[0], 'sendMessage')
-                text = urllib.parse.parse_qs(call.call_args.args[1].decode())['text'][0]
-                self.assert_html(text, 4096)
-                gh.download.assert_not_called()
-            self.assertIn('SUCCESS', text)
-
-    def test_failure_cancelled_no_downloads(self):
+    def test_zero_single_failure_and_debug_link_only(self):
         jobs = [{'id': 99, 'name': '<bad job>', 'conclusion': 'failure',
                  'steps': [{'name': '<bad step>', 'conclusion': 'failure'}]}]
-        for conclusion in ('failure', 'cancelled'):
-            gh = github([artifact()], jobs)
-            tg = Mock()
+        for conclusion, artifacts in [('success', []), ('success', [artifact()]),
+                ('success', [artifact(11, 'miro-kernel-ultra-debug-12')]),
+                ('failure', [artifact()]), ('cancelled', [artifact()])]:
+            gh, tg = github(artifacts, jobs), Mock()
             n.notify(event(conclusion), REPO, gh, tg)
-            self.assertEqual(len(tg.mock_calls), 1)
-            tg.message.assert_called_once()
-            gh.download.assert_not_called()
-            text = tg.message.call_args.args[0]
-            for required in (conclusion.upper(), '&lt;bad step&gt;', '/job/99', 'Logs', '/artifacts/10'):
-                self.assertIn(required, text)
-            self.assert_html(text, 4096)
+            tg.rich.assert_called_once()
+            blocks, files = tg.rich.call_args.args
+            self.assertIn(conclusion.upper(), text(blocks))
+            self.assertIn('<bad step>', text(blocks))
+            if conclusion == 'success' and artifacts and artifacts[0]['id'] == 10:
+                self.assertEqual(len(files), 1)
+            else:
+                self.assertEqual(files, [])
+                gh.download.assert_not_called()
 
-    def test_expired_oversize_and_nonpackage_artifacts(self):
+    def test_413_fallback_once_and_other_errors(self):
+        gh, tg = github([artifact()]), Mock()
+        tg.rich.side_effect = [n.HTTPError(413), None]
+        n.notify(event(), REPO, gh, tg)
+        self.assertEqual(tg.rich.call_count, 2)
+        blocks, files = tg.rich.call_args.args
+        self.assertEqual(files, [])
+        self.assertNotIn('document', [b['type'] for b in blocks])
+        self.assertIn('/artifacts/10', text(blocks))
+        for status, artifacts in [(403, [artifact()]), (413, [])]:
+            tg = Mock()
+            tg.rich.side_effect = n.HTTPError(status)
+            with self.assertRaises(n.HTTPError):
+                n.notify(event(), REPO, github(artifacts), tg)
+            tg.rich.assert_called_once()
+
+    def test_debug_packages_cap_and_deduplication(self):
+        gh, tg = github([artifact(), artifact(11, 'miro-kernel-ultra-debug-12')]), Mock()
+        gh.download.return_value = package(names=[NAME, KPATCH, 'miro-kernel-ultra-debug-test.zip',
+                                                 'miro-kernel-ultra-kpatch-exp-debug-test.zip'])
+        n.notify(event(), REPO, gh, tg)
+        blocks, files = tg.rich.call_args.args
+        self.assertEqual([name for name, _ in files], [NAME, KPATCH])
+        self.assertIn('/artifacts/11', text(blocks))
+        gh.download.assert_called_once_with(10)
+
+    def test_expired_oversize_nonrelease_and_total_budget(self):
         for changes in ({'expired': True}, {'size_in_bytes': 201*n.MIB}, {'name': 'build-logs-12'}):
             gh, tg = github([artifact(**changes)]), Mock()
             n.notify(event(), REPO, gh, tg)
             gh.download.assert_not_called()
-            self.assertEqual(len(tg.mock_calls), 1)
-            text = tg.message.call_args.args[0]
-            self.assertIn('/artifacts/10', text)
+            blocks, files = tg.rich.call_args.args
+            self.assertEqual(files, [])
+            self.assertIn('/artifacts/10', text(blocks))
             if changes.get('expired'):
-                self.assertIn('expired', text)
+                self.assertIn('expired', text(blocks))
             if 'size_in_bytes' in changes:
-                self.assertIn('oversize', text)
+                self.assertIn('oversize', text(blocks))
+        gh, tg = github([artifact()]), Mock()
+        with patch.object(n, 'package_files', return_value=([(NAME, b'x' * (50*n.MIB))], [])):
+            n.notify(event(), REPO, gh, tg)
+        self.assertEqual(tg.rich.call_args.args[1], [])
 
-    def test_package_cap_and_deduplication(self):
-        gh, tg = github([artifact(), artifact(11, 'miro-kernel-ultra-debug-12')]), Mock()
-        gh.download.side_effect = [package(names=[f'miro-kernel-ultra-{i}.zip' for i in range(3)]),
-                                   package(names=[f'miro-kernel-ultra-{i}.zip' for i in range(5)])]
-        n.notify(event(), REPO, gh, tg)
-        self.assertEqual(len(tg.mock_calls), 1)
-        files, text = tg.album.call_args.args
-        self.assertEqual(len(files), 2)
-        self.assertEqual(len({name for name, _ in files}), 2)
-        self.assertIn('/artifacts/11', text)
-        self.assertIn('仅下载链接', text)
-        gh.download.assert_called_once_with(10)
+    def test_snapshot_missing_and_merge_builtin_precedence(self):
+        gh = github([])
+        snapshot = n.source_snapshot(gh, 'a' * 40)
+        self.assertEqual(snapshot['kernel'], '6.6.30')
+        self.assertEqual(snapshot['baka'], 'c' * 40)
+        self.assertEqual(snapshot['susfs'], 'v2.3.0')
+        self.assertTrue(all(call.args[0].endswith('?ref=' + 'a' * 40) for call in gh.get.call_args_list))
+        real_get = gh.get.side_effect
+        def get(path):
+            if 'miro_perf.config' in path:
+                return {'encoding': 'base64', 'content': base64.b64encode(b'CONFIG_KSU=m\n').decode()}
+            return real_get(path)
+        gh.get.side_effect = get
+        self.assertEqual(dict(n.source_snapshot(gh, 'a' * 40)['features'])['BakaSU'], '启用 (y)')
+        gh.get.side_effect = n.HTTPError(404)
+        snapshot = n.source_snapshot(gh, 'a' * 40)
+        self.assertEqual(snapshot['kernel'], '未知')
+        self.assertEqual(snapshot['baka'], '')
+        self.assertTrue(all('未知' in value for _, value in snapshot['features']))
+        gh.get.side_effect = n.HTTPError(403)
+        with self.assertRaises(n.HTTPError):
+            n.source_snapshot(gh, 'a' * 40)
 
-    def test_debug_packages_never_uploaded(self):
-        names = [NAME, 'miro-kernel-ultra-kpatch-exp-test.zip',
-                 'miro-kernel-ultra-debug-test.zip', 'miro-kernel-ultra-kpatch-exp-debug-test.zip']
-        gh, tg = github([artifact(), artifact(11, 'miro-kernel-ultra-debug-12')]), Mock()
-        gh.download.return_value = package(names=names)
-        n.notify(event(), REPO, gh, tg)
-        files, text = tg.album.call_args.args
-        self.assertEqual({name for name, _ in files}, {NAME, 'miro-kernel-ultra-kpatch-exp-test.zip'})
-        self.assertIn('/artifacts/11', text)
-        gh.download.assert_called_once_with(10)
-        gh, tg = github([artifact(11, 'miro-kernel-ultra-debug-12')]), Mock()
-        n.notify(event(), REPO, gh, tg)
-        gh.download.assert_not_called()
-        tg.message.assert_called_once()
-        self.assertIn('/artifacts/11', tg.message.call_args.args[0])
-
-    def test_lengths_html_and_artifact_fallback(self):
-        malicious = '<b>&"😀' * 2000
-        for limit in (1024, 4096):
-            for count in (1, 100):
-                artifacts = [artifact(i, malicious) for i in range(count)]
-                gh = github(artifacts, message=malicious)
-                run = event()['workflow_run']
-                run['head_branch'] = malicious
-                text = n.notification_text(run, REPO, gh.get.return_value, [], artifacts, 0, [], limit)
-                self.assert_html(text, limit)
-                self.assertIn('a' * 40, text)
-                self.assertIn('SUCCESS', text)
-                self.assertIn('Summary:', text)
-                if count == 100:
-                    self.assertIn('/actions/runs/12#artifacts', text)
-                else:
-                    self.assertIn('/artifacts/0', text)
-        self.assertEqual(n.truncate('😀😀', 3), '😀…')
-        self.assertEqual(n.text_len('&lt;b&gt;&amp;😀'), 6)
+    def test_rich_size_topic_and_file_limits(self):
         tg = n.Telegram('dummy', '-123', '')
+        self.assertNotIn('message_thread_id', tg.fields)
+        for thread in ('-1', '0', 'abc'):
+            with self.assertRaises(n.Error):
+                n.Telegram('dummy', '-123', thread)
         with patch.object(tg, 'call') as call:
-            tg.document(NAME, PAYLOAD, '😀' * 512)
-            tg.message('😀' * 2048)
-            for action in (lambda: tg.document(NAME, PAYLOAD, '😀' * 513),
-                           lambda: tg.album([(NAME, PAYLOAD)] * 2, '😀' * 513),
-                           lambda: tg.message('😀' * 2049)):
+            tg.rich([{'type': 'paragraph', 'text': '<b>&😀'}], [])
+            for blocks, files in [([{'type': 'pre', 'text': '😀' * 20000}], []),
+                                  ([], [(NAME, PAYLOAD)] * 3), ([], [('../x.zip', PAYLOAD)])]:
                 with self.assertRaises(n.Error):
-                    action()
+                    tg.rich(blocks, files)
+            with patch.object(n, 'MIB', 10):
+                tg.rich([], [(NAME, b'x' * 500)])
+                with self.assertRaises(n.Error):
+                    tg.rich([], [(NAME, b'x' * 501)])
             self.assertEqual(call.call_count, 2)
+        self.assertEqual(n.truncate('😀😀', 3), '😀…')
+
+    def test_long_text_artifact_budget(self):
+        malicious = '<b>&"😀' * 2000
+        gh, tg = github([artifact(i, malicious) for i in range(100)] +
+                         [artifact(101, 'miro-kernel-ultra-debug-12')], message=malicious), n.Telegram('dummy', '-123', '')
+        run_event = event()
+        run_event['workflow_run']['head_branch'] = malicious
+        run_event['repository']['default_branch'] = malicious
+        with patch.object(tg, 'call') as call:
+            n.notify(run_event, REPO, gh, tg)
+        _, parts = multipart(call.call_args)
+        payload = parts['rich_message'].get_payload(decode=True)
+        self.assertLessEqual(len(payload), 32768)
+        self.assertIn(b'/artifacts/101', payload)
+        self.assertIn(b'/actions/runs/12#artifacts', payload)
+        self.assertIn(('a' * 40).encode(), payload)
 
     def test_http_errors_hide_secrets(self):
-        secret_url = 'https://api.telegram.org/botDUMMY-OFFLINE-SECRET/sendMessage'
+        secret_url = 'https://api.telegram.org/botDUMMY-OFFLINE-SECRET/sendRichMessage'
         for error in (urllib.error.HTTPError(secret_url, 401, secret_url, {}, None),
                       urllib.error.URLError(secret_url), ValueError(secret_url)):
             opener = Mock()
@@ -354,9 +294,7 @@ class Tests(unittest.TestCase):
                 n.http('https://example.test', limit=4)
 
     def test_artifact_validation(self):
-        files, skipped = n.package_files(package())
-        self.assertEqual(files, [(NAME, PAYLOAD)])
-        self.assertEqual(skipped, [])
+        self.assertEqual(n.package_files(package()), ([(NAME, PAYLOAD)], []))
         symlink = zipfile.ZipInfo('link')
         symlink.external_attr = (stat.S_IFLNK | 0o777) << 16
         for data in (package('0' * 64), archive([(NAME, PAYLOAD)]),
@@ -366,7 +304,6 @@ class Tests(unittest.TestCase):
                 n.package_files(data)
 
     def test_50mib_package_link_only(self):
-        # 缩小 MiB 单位验证相同边界，避免离线测试分配大文件。
         gh, tg = github([artifact()]), Mock()
         payload = b'x' * 501
         data = archive([('SHA256SUMS-standard', f'{hashlib.sha256(payload).hexdigest()}  {NAME}\n'), (NAME, payload)])
@@ -374,18 +311,12 @@ class Tests(unittest.TestCase):
             self.assertEqual(n.package_files(data), ([], [NAME]))
             gh.download.return_value = data
             n.notify(event(), REPO, gh, tg)
-            self.assertEqual(len(tg.mock_calls), 1)
-            text = tg.message.call_args.args[0]
-            self.assertIn('/artifacts/10', text)
-            self.assertIn('50 MiB', text)
-            telegram = n.Telegram('dummy', '-123', '')
-            with patch.object(telegram, 'call') as call:
-                telegram.document(NAME, b'x' * 500, 'caption')
-                with self.assertRaises(n.Error):
-                    telegram.document(NAME, payload, 'caption')
-                call.assert_called_once()
+        blocks, files = tg.rich.call_args.args
+        self.assertEqual(files, [])
+        self.assertIn('50 MiB', text(blocks))
+        self.assertIn('/artifacts/10', text(blocks))
 
-    def test_trust_boundary(self):
+    def test_trust_boundary_and_invalid_sha(self):
         baseline = event()['workflow_run']
         self.assertTrue(n.trusted(baseline, REPO, 'main'))
         for changes in ({'event': 'pull_request'}, {'head_branch': 'upstream-candidate'},
@@ -394,12 +325,16 @@ class Tests(unittest.TestCase):
             run = copy.deepcopy(baseline)
             run.update(changes)
             self.assertFalse(n.trusted(run, REPO, 'main'))
-        gh, tg = Mock(), Mock()
-        candidate = event()
-        candidate['workflow_run']['head_branch'] = 'upstream-candidate'
-        n.notify(candidate, REPO, gh, tg)
-        self.assertEqual(gh.mock_calls, [])
-        self.assertEqual(tg.mock_calls, [])
+            candidate = event()
+            candidate['workflow_run'] = run
+            gh, tg = Mock(), Mock()
+            n.notify(candidate, REPO, gh, tg)
+            self.assertEqual(gh.mock_calls, [])
+            self.assertEqual(tg.mock_calls, [])
+        invalid = event()
+        invalid['workflow_run']['head_sha'] = '../main'
+        with self.assertRaises(n.Error):
+            n.notify(invalid, REPO, Mock(), Mock())
 
     def test_missing_configuration_fails(self):
         for env, missing in (({}, 'TELEGRAM_CHAT_ID'),
