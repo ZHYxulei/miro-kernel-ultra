@@ -22,6 +22,11 @@ PACKAGE = re.compile(r'miro-kernel-ultra-[A-Za-z0-9_.-]+\.zip\Z')
 class Error(Exception):
     pass
 
+class HTTPError(Error):
+    def __init__(self, status):
+        self.status = status
+        super().__init__(f'HTTP 请求失败，状态码 {status}')
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -47,7 +52,7 @@ def http(url, headers=None, data=None, limit=4*MIB, redirect=False):
                 raise Error('拒绝不受信任的下载跳转') from None
             return http(location, limit=limit)
         # 不打印请求 URL、响应或原始异常，避免泄露 bot token。
-        raise Error(f'HTTP 请求失败，状态码 {exc.code}') from None
+        raise HTTPError(exc.code) from None
     except (urllib.error.URLError, OSError, ValueError):
         raise Error('HTTP 连接、超时或格式错误') from None
 
@@ -211,19 +216,27 @@ def notification_text(run, repo, commit, jobs, artifacts, uploaded, notes, limit
             f"Branch    │ {esc(branch, 48)}\n"
             f"Duration  │ {seconds//60}m {seconds%60}s\n"
             f"Build     │ #{run_id} / attempt {attempt}\n"
-            f"Packages  │ {uploaded}/4\n"
+            f"Packages  │ {uploaded}/2 release\n"
             '</pre>\n'
             f'{link(run_url, "Logs")} · {link(compare, "Compare")}\n')
     artifact_url = f'{base}/actions/runs/{run_id}#artifacts'
     artifact_lines = []
     for artifact in artifacts:
         url = f"{base}/actions/runs/{run_id}/artifacts/{int(artifact['id'])}"
-        state = ' · 过期 / expired' if artifact.get('expired') else ''
+        state = ' · 仅下载链接' if artifact['name'] == f'miro-kernel-ultra-debug-{run_id}' else ''
+        if artifact.get('expired'):
+            state += ' · 过期 / expired'
         if int(artifact['size_in_bytes']) > 200*MIB:
             state += ' · 超限 / oversize'
         artifact_lines.append(f"• {link(url, artifact['name'])}{state}\n")
-    footer = (f'Packages: {uploaded}/4 · SHA256/symbols/logs 仅链接\n'
-              'GitHub 下载需登录，受保留期限限制\n')
+    footer = ('Debug/SHA256/symbols/logs 仅链接；GitHub 下载需登录，有保留期限\n')
+    features = ('\n<b>功能表（源码集成，非设备验证）</b>\n<pre>'
+                '功能          │ 普通版 │ KPatch版\n'
+                'BakaSU/SUSFS  │ 内置   │ 内置\n'
+                'Re:Kernel     │ 内置   │ 内置\n'
+                'NTsync/MGLRU  │ 内置   │ 内置\n'
+                'KPM           │ 无     │ 实验\n'
+                '</pre>')
     artifacts_text = '<b>Artifacts</b>\n' + ''.join(artifact_lines)
     # 优先保留状态、完整 commit 与所有产物链接；无法容纳时使用运行总产物入口。
     message = meta['message'].splitlines()
@@ -233,9 +246,14 @@ def notification_text(run, repo, commit, jobs, artifacts, uploaded, notes, limit
                      f'Author: {esc(author, 60)}\n')
     summary_min = commit_header + 'Summary: ' + esc(title, 24) + '\n'
     # 为下方提交说明预留空间，产物过多时保留统一下载入口。
-    if text_len(core + summary_min + artifacts_text + footer) + 160 > limit:
+    if text_len(core + summary_min + artifacts_text + footer + features) + 160 > limit:
         artifacts_text = link(artifact_url, f'全部产物 / All artifacts ({len(artifacts)})') + '\n'
-    text = core + artifacts_text + footer + commit_header
+        for artifact in artifacts:
+            if artifact['name'] == f'miro-kernel-ultra-debug-{run_id}':
+                artifacts_text += link(f"{base}/actions/runs/{run_id}/artifacts/{int(artifact['id'])}",
+                                       'Debug 下载（仅链接）') + '\n'
+                break
+    text = core + artifacts_text + footer + features + commit_header
     remaining = limit - text_len(text) - len('Summary: \n')
     if remaining > 0:
         text += 'Summary: ' + esc(meta['message'], min(700, remaining)) + '\n'
@@ -267,23 +285,34 @@ def notify(event, repo, gh, tg):
     files, notes, seen = [], [], set()
     for artifact in artifacts:
         if (run['conclusion'] != 'success' or artifact.get('expired') or artifact['name'] not in
-                (f'miro-kernel-ultra-release-{run_id}', f'miro-kernel-ultra-debug-{run_id}')
-                or int(artifact['size_in_bytes']) > 200*MIB or len(files) >= 4):
+                (f'miro-kernel-ultra-release-{run_id}',)
+                or int(artifact['size_in_bytes']) > 200*MIB or len(files) >= 2):
             continue
         packages, skipped = package_files(gh.download(artifact['id']))
         for name, content in packages:
-            if name not in seen and len(files) < 4:
+            if name not in seen and 'debug' not in name.lower() and len(files) < 2:
                 files.append((name, content))
                 seen.add(name)
         for name in skipped:
             notes.append(f'{esc(name)} 超过 50 MiB，仅提供 artifact 链接')
+    # 留出 multipart 开销；总请求过大时不拆分刷屏，统一使用下载链接。
+    if sum(len(content) for _, content in files) > 49*MIB:
+        files = []
+        notes.append('安装包合计超过上传预算，仅提供 artifact 下载链接')
     text = notification_text(run, repo, commit, jobs, artifacts, len(files), notes, 1024 if files else 4096)
-    if len(files) >= 2:
-        tg.album(files, text)
-    elif files:
-        tg.document(*files[0], text)
-    else:
-        tg.message(text)
+    try:
+        if len(files) >= 2:
+            tg.album(files, text)
+        elif files:
+            tg.document(*files[0], text)
+        else:
+            tg.message(text)
+    except HTTPError as exc:
+        if exc.status != 413 or not files:
+            raise
+        print('::warning::Telegram 文件上传被拒绝（413），改发单条下载链接通知')
+        notes.append('文件上传请求过大，仅提供 artifact 下载链接')
+        tg.message(notification_text(run, repo, commit, jobs, artifacts, 0, notes, 4096))
 
 def main():
     if sys.argv[1:] == ['--self-test']:

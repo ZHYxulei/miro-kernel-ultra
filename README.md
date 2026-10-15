@@ -99,8 +99,11 @@ cmdline/bootconfig 伪造、open redirect 和内存映射隐藏等功能。SUSFS
 - **LZ4KD pending**：授权依据不足，尚未加入；保持现有
   [`LZ4`](lib/lz4/) 与 [`zram lzo-rle 默认`](drivers/block/zram/zram_drv.c)，不声称替换或提速。
 - **Telegram 通知**：[`telegram-notify.py`](scripts/ci/telegram-notify.py) 已实现一次
-  `sendMediaGroup` 发送至多 4 个安装 ZIP，仅首项 caption，按解析后的 UTF-16
-  code units（symbols）限制为 1024；symbols、log、SHA 产物仅给 links。
+  `sendMediaGroup` 仅发送 release 普通版与 KPatch 实验版两个安装 ZIP，debug 不下载、不上传，
+  仅提供 GitHub artifact 下载链接；symbols、log、SHA 产物也仅给链接。
+  仅首项 caption，按解析后的 UTF-16 code units（symbols）限制为 1024；
+  排列为产物下载链接、功能对照表、commit 作者/SHA/说明。功能表表示源码集成，非设备验证。
+  上传合计超过 49 MiB 或遇到 HTTP 413 时，回退为一条带下载链接的文本通知，不拆分刷屏。
   1 个文件使用 `sendDocument`，0 个文件或构建失败/取消使用 `sendMessage`。
   [`离线测试`](scripts/ci/test-telegram-notify.py) 与
   [`CI 静态/离线检查`](scripts/ci/check-ci.py) 不等于线上测试，真实发送尚未验证。

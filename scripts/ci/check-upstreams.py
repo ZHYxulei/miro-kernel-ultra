@@ -185,8 +185,17 @@ def main():
         if sha == old:
             continue
         repo = source["url"].removeprefix("https://github.com/").removesuffix(".git")
-        if not safe_update(api.call("GET", f"compare/{old}...{sha}", repo=repo)["status"]):
-            raise ValueError("非快进更新，必须人工保留 fork 定制")
+        status = api.call("GET", f"compare/{old}...{sha}", repo=repo)["status"]
+        if not safe_update(status):
+            marker = f"<!-- upstream-non-ff:{source['path']}:{old}:{sha} -->"
+            if not any(not i.get("pull_request") and trusted(i)
+                       and (i.get("body") or "").startswith(marker) for i in issues):
+                reports.append({"title": f"[upstream] {source['path']} 非快进更新需人工适配 {sha[:12]}",
+                    "body": marker + f"\n来源: {source['url']}\nref: `{selected['ref']}`\n"
+                    + f"当前: `{old}`\n上游: `{sha}`\n比较状态: `{status}`\n"
+                    + "保留当前 fork 定制，不创建该子模块更新候选；需人工合并、编译和设备验证。"})
+            print(f"::warning::{source['path']} 非快进更新（{status}），保留当前版本并报告人工处理")
+            continue
         updates[source["path"]] = sha
         notes.append(f"- {source['path']}: `{old}` → `{sha}` ({source['url']} {selected['ref']})")
     for source in config["observations"]:
@@ -345,6 +354,34 @@ class OfflineTests(unittest.TestCase):
                 api.call("GET", path, repo=repo)
                 self.assertEqual(opened.call_args.args[0].full_url,
                                  "https://api.github.com/repos/" + suffix)
+
+    def test_non_ff_report_dedup_no_candidate(self):
+        api = Mock(repo="owner/repo")
+        source = {"path": "KernelSU", "url": "https://github.com/Baka-SU/BakaSU.git", "ref": "refs/heads/main"}
+        config = {"submodules": [source], "observations": []}
+        def call(method, path, *args, **kwargs):
+            if method == "POST":
+                return {}
+            if path == "":
+                return {"default_branch": "main"}
+            if path.startswith("git/ref"):
+                return {"object": {"sha": "base"}}
+            if path.startswith("compare/"):
+                return {"status": "diverged"}
+            return {"tree": [{"path": "KernelSU", "sha": "a" * 40, "mode": "160000"}]}
+        api.call.side_effect = call
+        api.pages.return_value = []
+        with patch(__name__ + ".API", return_value=api), patch(__name__ + ".git", return_value="base"), \
+             patch.object(Path, "read_text", return_value=json.dumps(config)), \
+             patch(__name__ + ".resolve", return_value="b" * 40):
+            main()
+            posts = [c for c in api.call.call_args_list if c.args[0] == "POST"]
+            self.assertEqual([c.args[1] for c in posts], ["issues"])
+            report = dict(posts[0].args[2], user={"login": BOT})
+            api.reset_mock()
+            api.pages.side_effect = lambda path: [report] if path.startswith("issues") else []
+            main()
+            self.assertFalse(any(c.args[0] == "POST" for c in api.call.call_args_list))
 
     def test_network_failure_no_writes(self):
         api = Mock(repo="owner/repo")

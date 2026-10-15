@@ -122,7 +122,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(parts['document'].get_payload(decode=True), PAYLOAD)
 
     def test_album_single_multipart_caption_once(self):
-        names = [f'miro-kernel-ultra-{i}.zip' for i in range(4)]
+        names = ['miro-kernel-ultra-test.zip', 'miro-kernel-ultra-kpatch-exp-test.zip']
         artifacts = [artifact(), artifact(11, 'symbols-12'), artifact(12, 'build-logs-12'), artifact(13, 'SHA256SUMS-12')]
         gh = github(artifacts)
         gh.download.return_value = package(names=names)
@@ -133,12 +133,12 @@ class Tests(unittest.TestCase):
         method, parts = multipart(call.call_args)
         self.assertEqual(method, 'sendMediaGroup')
         media = json.loads(parts['media'].get_payload(decode=True))
-        self.assertEqual(len(media), 4)
+        self.assertEqual(len(media), 2)
         self.assertEqual(sum('caption' in item for item in media), 1)
         self.assertEqual(media[0]['parse_mode'], 'HTML')
         self.assertNotIn('caption', parts)
-        self.assertEqual(sum(p.get_filename() is not None for p in parts.values()), 4)
-        for i, name in enumerate(names):
+        self.assertEqual(sum(p.get_filename() is not None for p in parts.values()), 2)
+        for i, name in enumerate(sorted(names)):
             self.assertEqual(media[i]['type'], 'document')
             self.assertEqual(media[i]['media'], f'attach://file{i}')
             self.assertEqual(parts[f'file{i}'].get_filename(), name)
@@ -154,14 +154,42 @@ class Tests(unittest.TestCase):
     def test_table_and_commit_body_at_bottom(self):
         gh = github([artifact()], message='feat: update kernel\n\n详细的提交说明 & 验证结果')
         text = n.notification_text(event()['workflow_run'], REPO, gh.get.return_value,
-                                   [], [artifact()], 4, [], 1024)
+                                   [], [artifact()], 2, [], 1024)
         self.assertIn('<pre>', text)
         self.assertIn('Branch    │ main', text)
-        self.assertIn('Packages  │ 4/4', text)
+        self.assertIn('Packages  │ 2/2 release', text)
+        self.assertLess(text.index('<b>Artifacts</b>'), text.index('<b>功能表'))
+        self.assertLess(text.index('<b>功能表'), text.index('<b>Commit 信息</b>'))
+        for feature in ('BakaSU/SUSFS', 'Re:Kernel', 'NTsync/MGLRU', 'KPM', '实验', '非设备验证'):
+            self.assertIn(feature, text)
         self.assertIn('Author: A&amp;B', text)
         self.assertIn('详细的提交说明 &amp; 验证结果', text)
         self.assertLess(text.index('<b>Artifacts</b>'), text.index('<b>Commit 信息</b>'))
         self.assert_html(text, 1024)
+
+    def test_upload_413_falls_back_once(self):
+        gh, tg = github([artifact()]), Mock()
+        tg.document.side_effect = n.HTTPError(413)
+        n.notify(event(), REPO, gh, tg)
+        tg.document.assert_called_once()
+        tg.message.assert_called_once()
+        text = tg.message.call_args.args[0]
+        self.assertIn('/artifacts/10', text)
+        self.assertIn('Commit 信息', text)
+        self.assert_html(text, 4096)
+        tg.document.side_effect = n.HTTPError(403)
+        with self.assertRaises(n.HTTPError):
+            n.notify(event(), REPO, github([artifact()]), tg)
+        self.assertEqual(tg.message.call_count, 1)
+
+    def test_total_upload_budget(self):
+        gh, tg = github([artifact()]), Mock()
+        with patch.object(n, 'package_files', return_value=([(NAME, b'x' * (50*n.MIB))], [])):
+            n.notify(event(), REPO, gh, tg)
+        tg.album.assert_not_called()
+        tg.document.assert_not_called()
+        tg.message.assert_called_once()
+        self.assertIn('/artifacts/10', tg.message.call_args.args[0])
 
     def test_album_bounds(self):
         tg = n.Telegram('dummy', '-123', '')
@@ -230,9 +258,27 @@ class Tests(unittest.TestCase):
         n.notify(event(), REPO, gh, tg)
         self.assertEqual(len(tg.mock_calls), 1)
         files, text = tg.album.call_args.args
-        self.assertEqual(len(files), 4)
-        self.assertEqual(len({name for name, _ in files}), 4)
+        self.assertEqual(len(files), 2)
+        self.assertEqual(len({name for name, _ in files}), 2)
         self.assertIn('/artifacts/11', text)
+        self.assertIn('仅下载链接', text)
+        gh.download.assert_called_once_with(10)
+
+    def test_debug_packages_never_uploaded(self):
+        names = [NAME, 'miro-kernel-ultra-kpatch-exp-test.zip',
+                 'miro-kernel-ultra-debug-test.zip', 'miro-kernel-ultra-kpatch-exp-debug-test.zip']
+        gh, tg = github([artifact(), artifact(11, 'miro-kernel-ultra-debug-12')]), Mock()
+        gh.download.return_value = package(names=names)
+        n.notify(event(), REPO, gh, tg)
+        files, text = tg.album.call_args.args
+        self.assertEqual({name for name, _ in files}, {NAME, 'miro-kernel-ultra-kpatch-exp-test.zip'})
+        self.assertIn('/artifacts/11', text)
+        gh.download.assert_called_once_with(10)
+        gh, tg = github([artifact(11, 'miro-kernel-ultra-debug-12')]), Mock()
+        n.notify(event(), REPO, gh, tg)
+        gh.download.assert_not_called()
+        tg.message.assert_called_once()
+        self.assertIn('/artifacts/11', tg.message.call_args.args[0])
 
     def test_lengths_html_and_artifact_fallback(self):
         malicious = '<b>&"😀' * 2000
