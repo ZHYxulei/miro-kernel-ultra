@@ -19,7 +19,7 @@ jobs:
       github.event.workflow_run.head_branch == github.event.repository.default_branch &&
       contains(fromJSON('["success", "failure", "cancelled"]'), github.event.workflow_run.conclusion)
     environment: Telegram Bot
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       # 仅使用默认分支的受信脚本，不检出候选提交，也不执行 artifact。

@@ -18,7 +18,7 @@ jobs:
   request-review:
     # 手动调度只在默认分支运行，绝不加载候选分支的工作流代码。
     if: github.event_name != 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       # 仅使用官方 REST 元数据接口；不检出、不执行 PR 内容。
