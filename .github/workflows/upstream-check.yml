@@ -15,7 +15,7 @@ jobs:
   check:
     # 写权限任务只能从默认分支运行可信检测脚本。
     if: github.ref_name == github.event.repository.default_branch
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
