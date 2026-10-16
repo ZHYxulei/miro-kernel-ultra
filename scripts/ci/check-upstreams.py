@@ -120,6 +120,22 @@ def trusted(record):
     return record.get("user", {}).get("login") == BOT
 
 
+def component_records(issues, prefix, sha_count):
+    pattern = re.escape(prefix) + ":".join([r"[0-9a-f]{40}"] * sha_count) + r" -->"
+    records = [i for i in issues if not i.get("pull_request") and trusted(i)
+               and re.match(pattern, i.get("body") or "")]
+    return sorted(records, key=lambda i: (i.get("updated_at", i.get("created_at", "")), i.get("number", 0)), reverse=True)
+
+
+def plan_report(reports, records, marker, report):
+    opened = next((i for i in records if i.get("state") == "open"), None)
+    if opened:
+        if not (opened.get("body") or "").startswith(marker):
+            reports.append(("PATCH", f"issues/{opened['number']}", report))
+    elif not any((i.get("body") or "").startswith(marker) for i in records):
+        reports.append(("POST", "issues", report))
+
+
 def candidate_exists(prs, marker):
     return any(trusted(p) and marker in (p.get("body") or "") for p in prs)
 
@@ -177,8 +193,8 @@ def main():
             sha = selected["expected_sha"]
             releases[source["path"]] = [selected["ref"], sha]
             if new_pin:
-                reports.append({"title": f"[upstream] {source['path']} 锁定 {selected['ref']}",
-                    "body": f"<!-- upstream-release-pin:{source['path']}:{selected['ref']}:{sha} -->\n官方 release 的已解析提交 SHA；tag 重写将停止自动更新。"})
+                reports.append(("POST", "issues", {"title": f"[upstream] {source['path']} 锁定 {selected['ref']}",
+                    "body": f"<!-- upstream-release-pin:{source['path']}:{selected['ref']}:{sha} -->\n官方 release 的已解析提交 SHA；tag 重写将停止自动更新。"}))
         else:
             selected, sha = source, resolve(source)
         old = links[source["path"]]
@@ -186,33 +202,40 @@ def main():
             continue
         repo = source["url"].removeprefix("https://github.com/").removesuffix(".git")
         status = api.call("GET", f"compare/{old}...{sha}", repo=repo)["status"]
+        if status == "behind":
+            print(f"::notice::{source['path']} 当前版本已包含上游（behind），保留当前版本，不需人工适配")
+            continue
         if not safe_update(status):
-            marker = f"<!-- upstream-non-ff:{source['path']}:{old}:{sha} -->"
-            if not any(not i.get("pull_request") and trusted(i)
-                       and (i.get("body") or "").startswith(marker) for i in issues):
-                reports.append({"title": f"[upstream] {source['path']} 非快进更新需人工适配 {sha[:12]}",
-                    "body": marker + f"\n来源: {source['url']}\nref: `{selected['ref']}`\n"
-                    + f"当前: `{old}`\n上游: `{sha}`\n比较状态: `{status}`\n"
-                    + "保留当前 fork 定制，不创建该子模块更新候选；需人工合并、编译和设备验证。"})
+            prefix = f"<!-- upstream-non-ff:{source['path']}:"
+            marker = f"{prefix}{old}:{sha} -->"
+            records = component_records(issues, prefix, 2)
+            plan_report(reports, records, marker, {
+                "title": f"[upstream] {source['path']} 非快进更新需人工适配 {sha[:12]}",
+                "body": marker + f"\n来源: {source['url']}\nref: `{selected['ref']}`\n"
+                + f"当前: `{old}`\n上游: `{sha}`\n比较状态: `{status}`\n"
+                + "保留当前 fork 定制，不创建该子模块更新候选；需人工合并、编译和设备验证。"})
             print(f"::warning::{source['path']} 非快进更新（{status}），保留当前版本并报告人工处理")
             continue
         updates[source["path"]] = sha
         notes.append(f"- {source['path']}: `{old}` → `{sha}` ({source['url']} {selected['ref']})")
     for source in config["observations"]:
         sha = resolve(source)
-        marker = f"<!-- upstream-observation:{source['id']}:"
-        records = [i for i in issues if not i.get("pull_request") and trusted(i)
-                   and (i.get("body") or "").startswith(marker)]
-        previous = records[0]["body"].split(marker)[1].split(" -->")[0] if records else source.get("observed_sha")
+        prefix = f"<!-- upstream-observation:{source['id']}:"
+        records = component_records(issues, prefix, 1)
+        previous = records[0]["body"][len(prefix):].split(" -->")[0] if records else source.get("observed_sha")
         if previous == sha:
             continue
-        baseline = previous is None
-        body = f"{marker}{sha} -->\n来源: {source['url']}\nref: `{source['ref']}`\n"
-        body += "首次仅建立观察基线，不是已导入 SHA。" if baseline else f"观察变化 `{previous}` → `{sha}`；需要人工回移植，未导入源码。"
+        if previous is None:
+            print(f"::notice::{source['id']} 首次观察 baseline `{sha}`；仅输出基线，未持久化，不是未完成移植，不创建 issue")
+            continue
+        marker = f"{prefix}{sha} -->"
+        body = marker + f"\n来源: {source['url']}\nref: `{source['ref']}`\n"
+        body += f"观察变化 `{previous}` → `{sha}`；需要人工回移植，未导入源码。"
         body += "\n仅报告，不创建候选 PR、不启动构建、不自动覆盖源码。\n" + source.get("scope", "")
-        reports.append({"title": f"[upstream] {source['id']} {'观察基线' if baseline else '需要人工回移植'} {sha[:12]}", "body": body})
-    for report in reports:
-        api.call("POST", "issues", report)
+        plan_report(reports, records, marker, {
+            "title": f"[upstream] {source['id']} 需要人工回移植 {sha[:12]}", "body": body})
+    for method, path, report in reports:
+        api.call(method, path, report)
     pending = [p for p in prs if p["state"] == "open" and p["head"]["ref"].startswith("automation/upstream-")]
     if updates:
         identity = key(updates, releases)
@@ -300,30 +323,120 @@ class OfflineTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release_source(api, source, [issue])
 
-    def test_observation_only_no_candidate(self):
-        source = {"id": "susfs", "url": "https://gitlab.com/a/b.git", "ref": "refs/heads/main", "observed_sha": None}
-        config = {"submodules": [], "observations": [source]}
+    def run_checker(self, config, issues=(), status="diverged", fail_after=None):
         api = Mock(repo="owner/repo")
-        api.call.side_effect = lambda method, path, *args: ({"default_branch": "main"} if path == "" else
-            {"object": {"sha": "base"}} if path.startswith("git/ref") else {"tree": []})
-        api.pages.return_value = []
+        def call(method, path, *args, **kwargs):
+            if method != "GET":
+                return {}
+            if path == "":
+                return {"default_branch": "main"}
+            if path.startswith("git/ref"):
+                return {"object": {"sha": "base"}}
+            if path.startswith("compare/"):
+                return {"status": status}
+            return {"tree": [{"path": s["path"], "sha": "a" * 40, "mode": "160000"} for s in config["submodules"]]}
+        api.call.side_effect = call
+        api.pages.side_effect = lambda path: issues if path.startswith("issues") else []
         with patch(__name__ + ".API", return_value=api), patch(__name__ + ".git", return_value="base"), \
-             patch.object(Path, "read_text", return_value=json.dumps(config)), patch(__name__ + ".resolve", return_value="b" * 40):
-            main()
-            posts = [c for c in api.call.call_args_list if c.args[0] == "POST"]
-            self.assertEqual(len(posts), 1)
-            self.assertEqual(posts[0].args[1], "issues")
-            report = posts[0].args[2]
-            api.reset_mock()
-            api.pages.side_effect = lambda path: [dict(report, user={"login": BOT})] if path.startswith("issues") else []
-            main()
-            self.assertFalse(any(c.args[0] == "POST" for c in api.call.call_args_list))
-            api.reset_mock()
-            api.pages.side_effect = lambda path: [dict(report, body=report["body"].replace("b" * 40, "a" * 40), user={"login": BOT})] if path.startswith("issues") else []
-            main()
-            posts = [c for c in api.call.call_args_list if c.args[0] == "POST"]
-            self.assertEqual([c.args[1] for c in posts], ["issues"])
-            self.assertIn("需要人工回移植", posts[0].args[2]["body"])
+             patch.object(Path, "read_text", return_value=json.dumps(config)), \
+             patch(__name__ + ".resolve", side_effect=fail_after, return_value="b" * 40), \
+             patch("builtins.print") as output:
+            if fail_after:
+                with self.assertRaises(urllib.error.URLError):
+                    main()
+            else:
+                main()
+        return [c.args for c in api.call.call_args_list if c.args[0] != "GET"], output
+
+    def observation_config(self):
+        return {"submodules": [], "observations": [{"id": "susfs", "url": "https://gitlab.com/a/b.git",
+                "ref": "refs/heads/main", "observed_sha": None}]}
+
+    def observation_issue(self, sha="a", state="open", number=8):
+        return {"number": number, "state": state, "user": {"login": BOT},
+                "body": "<!-- upstream-observation:susfs:" + sha * 40 + " -->\n首次仅建立观察基线，不是已导入 SHA。"}
+
+    def submodule_config(self):
+        return {"submodules": [{"path": "KPatch-Next", "url": "https://github.com/ZHYxulei/KPatch-Next-EXP.git",
+                "ref": "refs/heads/main"}], "observations": []}
+
+    def test_first_baseline_no_writes(self):
+        config = self.observation_config()
+        for _ in range(2):
+            writes, output = self.run_checker(config)
+            self.assertEqual(writes, [])
+            self.assertIn("首次观察 baseline", output.call_args.args[0])
+            self.assertIn("未持久化", output.call_args.args[0])
+        self.assertIsNone(config["observations"][0]["observed_sha"])
+
+    def test_observation_component_reuse_and_idempotence(self):
+        config = self.observation_config()
+        issue = self.observation_issue()
+        writes, _ = self.run_checker(config, [issue])
+        self.assertEqual([(w[0], w[1]) for w in writes], [("PATCH", "issues/8")])
+        self.assertIn("需要人工回移植", writes[0][2]["title"])
+        self.assertIn("`" + "a" * 40 + "` → `" + "b" * 40, writes[0][2]["body"])
+        updated = dict(issue, **writes[0][2], updated_at="2026-10-16")
+        newer_number = self.observation_issue("a", state="closed", number=14)
+        writes, _ = self.run_checker(config, [newer_number, updated])
+        self.assertEqual(writes, [])
+        writes, _ = self.run_checker(config, [dict(updated, state="closed")])
+        self.assertEqual(writes, [])
+        writes, _ = self.run_checker(config, [dict(issue, state="closed")])
+        self.assertEqual([(w[0], w[1]) for w in writes], [("POST", "issues")])
+        created = dict(issue, **writes[0][2], number=15)
+        writes, _ = self.run_checker(config, [created, dict(issue, state="closed")])
+        self.assertEqual(writes, [])
+
+    def test_observation_trusted_history_only(self):
+        issue = self.observation_issue()
+        for invalid in (dict(issue, user={"login": "someone"}), dict(issue, pull_request={"url": "pr"}),
+                        dict(issue, body="<!-- upstream-observation:susfs:invalid -->")):
+            writes, output = self.run_checker(self.observation_config(), [invalid])
+            self.assertEqual(writes, [])
+            self.assertIn("首次观察 baseline", output.call_args.args[0])
+        config = self.observation_config()
+        config["observations"][0]["observed_sha"] = "a" * 40
+        writes, _ = self.run_checker(config)
+        self.assertEqual([(w[0], w[1]) for w in writes], [("POST", "issues")])
+
+    def test_behind_no_alert_or_candidate(self):
+        issue = {"number": 7, "state": "open", "user": {"login": BOT},
+                 "body": "<!-- upstream-non-ff:KPatch-Next:" + "a" * 40 + ":" + "b" * 40 + " -->"}
+        for issues in ([], [issue]):
+            writes, output = self.run_checker(self.submodule_config(), issues, status="behind")
+            self.assertEqual(writes, [])
+            self.assertIn("::notice::", output.call_args.args[0])
+            self.assertIn("保留当前版本", output.call_args.args[0])
+            self.assertNotIn("::warning::", output.call_args.args[0])
+
+    def test_non_ff_component_reuse_and_idempotence(self):
+        config = self.submodule_config()
+        writes, _ = self.run_checker(config)
+        self.assertEqual([(w[0], w[1]) for w in writes], [("POST", "issues")])
+        issue = dict(writes[0][2], number=7, state="open", user={"login": BOT})
+        writes, _ = self.run_checker(config, [issue])
+        self.assertEqual(writes, [])
+        old = dict(issue, body=issue["body"].replace("b" * 40, "c" * 40))
+        writes, _ = self.run_checker(config, [old])
+        self.assertEqual([(w[0], w[1]) for w in writes], [("PATCH", "issues/7")])
+        self.assertEqual(set(writes[0][2]), {"title", "body"})
+        writes, _ = self.run_checker(config, [dict(issue, state="closed")])
+        self.assertEqual(writes, [])
+        writes, _ = self.run_checker(config, [dict(old, state="closed")])
+        self.assertEqual([(w[0], w[1]) for w in writes], [("POST", "issues")])
+
+    def test_network_failure_no_writes(self):
+        config = self.submodule_config()
+        config["observations"] = self.observation_config()["observations"]
+        old = self.observation_issue()
+        for issues in ([], [old]):
+            writes, _ = self.run_checker(config, issues, fail_after=["b" * 40, urllib.error.URLError("离线")])
+            self.assertEqual(writes, [])
+        config = self.observation_config()
+        config["observations"].append(dict(config["observations"][0], id="other"))
+        writes, _ = self.run_checker(config, [old], fail_after=["b" * 40, urllib.error.URLError("离线")])
+        self.assertEqual(writes, [])
 
     def test_dispatch_failure_not_marked(self):
         api = Mock(repo="owner/repo")
@@ -354,47 +467,6 @@ class OfflineTests(unittest.TestCase):
                 api.call("GET", path, repo=repo)
                 self.assertEqual(opened.call_args.args[0].full_url,
                                  "https://api.github.com/repos/" + suffix)
-
-    def test_non_ff_report_dedup_no_candidate(self):
-        api = Mock(repo="owner/repo")
-        source = {"path": "KernelSU", "url": "https://github.com/Baka-SU/BakaSU.git", "ref": "refs/heads/main"}
-        config = {"submodules": [source], "observations": []}
-        def call(method, path, *args, **kwargs):
-            if method == "POST":
-                return {}
-            if path == "":
-                return {"default_branch": "main"}
-            if path.startswith("git/ref"):
-                return {"object": {"sha": "base"}}
-            if path.startswith("compare/"):
-                return {"status": "diverged"}
-            return {"tree": [{"path": "KernelSU", "sha": "a" * 40, "mode": "160000"}]}
-        api.call.side_effect = call
-        api.pages.return_value = []
-        with patch(__name__ + ".API", return_value=api), patch(__name__ + ".git", return_value="base"), \
-             patch.object(Path, "read_text", return_value=json.dumps(config)), \
-             patch(__name__ + ".resolve", return_value="b" * 40):
-            main()
-            posts = [c for c in api.call.call_args_list if c.args[0] == "POST"]
-            self.assertEqual([c.args[1] for c in posts], ["issues"])
-            report = dict(posts[0].args[2], user={"login": BOT})
-            api.reset_mock()
-            api.pages.side_effect = lambda path: [report] if path.startswith("issues") else []
-            main()
-            self.assertFalse(any(c.args[0] == "POST" for c in api.call.call_args_list))
-
-    def test_network_failure_no_writes(self):
-        api = Mock(repo="owner/repo")
-        api.call.side_effect = [{"default_branch": "main"}, {"object": {"sha": "base"}},
-                                {"tree": [{"path": "KernelSU", "sha": "a" * 40, "mode": "160000"}]}]
-        api.pages.return_value = []
-        config = {"submodules": [{"path": "KernelSU", "url": "https://github.com/Baka-SU/BakaSU.git", "ref": "refs/heads/main"}], "observations": []}
-        with patch(__name__ + ".API", return_value=api), patch(__name__ + ".git", return_value="base"), \
-             patch.object(Path, "read_text", return_value=json.dumps(config)), \
-             patch(__name__ + ".resolve", side_effect=urllib.error.URLError("离线")):
-            with self.assertRaises(urllib.error.URLError):
-                main()
-        self.assertTrue(all(c.args[0] == "GET" for c in api.call.call_args_list))
 
 
 if __name__ == "__main__":

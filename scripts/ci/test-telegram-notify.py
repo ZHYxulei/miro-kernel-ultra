@@ -65,6 +65,8 @@ def github(artifacts, jobs=None, message='<script>commit\nbody'):
         assert path.endswith('?ref=' + 'a' * 40), path
         if '/KernelSU?' in path:
             return {'sha': 'c' * 40, 'type': 'submodule'}
+        if '/KPatch-Next?' in path:
+            return {'sha': 'd' * 40, 'type': 'submodule'}
         text = ('VERSION = 6\nPATCHLEVEL = 6\nSUBLEVEL = 30\nEXTRAVERSION =\n'
                 if '/Makefile?' in path else '#define SUSFS_VERSION "v2.3.0"\n'
                 if '/susfs.h?' in path else
@@ -113,10 +115,23 @@ class Tests(unittest.TestCase):
             self.assertEqual(blocks[i]['document'], {'type': 'document', 'media': f'attach://file{i}'})
             self.assertEqual(parts[f'file{i}'].get_filename(), name)
             self.assertEqual(parts[f'file{i}'].get_payload(decode=True), PAYLOAD)
-        self.assertEqual([row[0]['text'] for row in blocks[2]['cells']], ['Kernel', 'Source', 'Branch', 'Toolchain', 'LTO'])
+        self.assertEqual([row[0]['text'] for row in blocks[2]['cells']], ['Kernel', 'Source', 'Toolchain', 'LTO'])
         self.assertEqual(blocks[2]['cells'][0][1]['text'], '6.6.30')
-        self.assertEqual(blocks[2]['cells'][4][1]['text'], 'ThinLTO')
+        self.assertEqual(blocks[2]['cells'][1][1]['text'],
+                         {'type': 'url', 'text': 'a' * 12, 'url': f'https://github.com/{REPO}/commit/' + 'a' * 40})
+        self.assertEqual(blocks[2]['cells'][2][1]['text'], '未记录')
+        self.assertEqual(blocks[2]['cells'][3][1]['text'], 'ThinLTO')
+        self.assertEqual([cell['text'] for cell in blocks[3]['cells'][0]], ['功能', '状态'])
+        self.assertTrue(all(cell['is_header'] for cell in blocks[3]['cells'][0]))
+        self.assertEqual(blocks[3]['cells'][1][1]['text'], {'type': 'button', 'button':
+                         {'text': '启用 (y)', 'style': 'success', 'disabled': {}}})
+        self.assertEqual(blocks[3]['cells'][-1][1]['text'],
+                         ['仅修补版 · ', {'type': 'marked', 'text': '实验'}])
+        self.assertEqual(blocks[10]['text'], {'type': 'url', 'text': 'KPatch: ' + 'd' * 12,
+                         'url': 'https://github.com/ZHYxulei/KPatch-Next-EXP/tree/' + 'd' * 40})
         for block in blocks[2:4]:
+            self.assertTrue(block['is_bordered'])
+            self.assertTrue(block['is_compact'])
             for row in block['cells']:
                 self.assertEqual(len(row), 2)
                 for cell in row:
@@ -215,6 +230,30 @@ class Tests(unittest.TestCase):
         with self.assertRaises(n.HTTPError):
             n.source_snapshot(gh, 'a' * 40)
 
+    def test_status_styles_and_unconfigured_lto(self):
+        for value, style in [('启用 (y)', 'success'), ('模块 (m)', 'success'), ('禁用 (n)', 'danger')]:
+            self.assertEqual(n.rich_status(value), {'type': 'button', 'button':
+                             {'text': value, 'style': style, 'disabled': {}}})
+        self.assertEqual(n.rich_status('未知'), '未知')
+        gh = github([])
+        real_get = gh.get.side_effect
+        def get(path):
+            result = real_get(path)
+            if '/configs/' in path:
+                result = {'encoding': 'base64', 'content': base64.b64encode(
+                    b'CONFIG_KSU=m\n# CONFIG_KSU_SUSFS is not set\n').decode()}
+            return result
+        gh.get.side_effect = get
+        snapshot = n.source_snapshot(gh, 'a' * 40)
+        self.assertEqual(snapshot['lto'], '未显式配置')
+        self.assertEqual(dict(snapshot['features'])['SUSFS'], '禁用 (n)')
+        self.assertEqual(dict(snapshot['features'])['Re:Kernel'], '未知')
+        self.assertEqual(dict(snapshot['features'])['BakaSU'], '模块 (m)')
+        gh.get.side_effect = n.HTTPError(404)
+        snapshot = n.source_snapshot(gh, 'a' * 40)
+        self.assertEqual(snapshot['kpm'], '')
+        self.assertIn('配置缺失', snapshot['lto'])
+
     def test_rich_size_topic_and_file_limits(self):
         tg = n.Telegram('dummy', '-123', '')
         self.assertNotIn('message_thread_id', tg.fields)
@@ -249,6 +288,17 @@ class Tests(unittest.TestCase):
         self.assertIn(b'/artifacts/101', payload)
         self.assertIn(b'/actions/runs/12#artifacts', payload)
         self.assertIn(('a' * 40).encode(), payload)
+        blocks = json.loads(payload)['blocks']
+        summary = next(b['text'] for b in blocks if b['type'] == 'paragraph' and
+                       isinstance(b['text'], str) and b['text'].startswith('Branch:'))
+        self.assertIn('CI #12/2', summary)
+        self.assertIn('SUCCESS', summary)
+        self.assertIn('1m 2s', summary)
+        self.assertLess(n.utf16_len(summary), 150)
+        source = blocks[0]['cells'][1][1]['text']
+        self.assertEqual(source['text'], 'a' * 12)
+        self.assertTrue(source['url'].endswith('a' * 40))
+        self.assertIn('源码配置非最终 .config', text(blocks))
 
     def test_http_errors_hide_secrets(self):
         secret_url = 'https://api.telegram.org/botDUMMY-OFFLINE-SECRET/sendRichMessage'

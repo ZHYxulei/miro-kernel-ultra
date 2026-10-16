@@ -213,7 +213,7 @@ def source_snapshot(gh, sha):
                     config[key] = value
     def state(key):
         value = config.get(key) if complete else None
-        return {'y': '启用 (y)', 'm': '模块 (m)', 'n': '禁用 (n)'}.get(value, '未知 / 未显式配置')
+        return {'y': '启用 (y)', 'm': '模块 (m)', 'n': '禁用 (n)'}.get(value, '未知')
     submodule, _ = content('KernelSU')
     baka_sha = submodule.get('sha', '')
     baka = (baka_sha if re.fullmatch(r'[a-fA-F0-9]{40}', baka_sha) else '')
@@ -223,14 +223,13 @@ def source_snapshot(gh, sha):
     susfs_version = re.search(r'^#define\s+SUSFS_VERSION\s+"([^"]+)"', susfs, re.M)
     return {'kernel': kernel, 'lto': ('ThinLTO' if config.get('CONFIG_LTO_CLANG_THIN') == 'y'
             else 'Full LTO' if config.get('CONFIG_LTO_CLANG_FULL') == 'y'
-            else '无 LTO（显式配置）' if config.get('CONFIG_LTO_NONE') == 'y' else '未知 / 未显式配置')
+            else '无 LTO（显式配置）' if config.get('CONFIG_LTO_NONE') == 'y' else '未显式配置')
             if complete else '未知（配置缺失）',
             'features': [(name, state(key)) for name, key in (
                 ('BakaSU', 'CONFIG_KSU'), ('SUSFS', 'CONFIG_KSU_SUSFS'),
                 ('Re:Kernel', 'CONFIG_REKERNEL'), ('NTsync', 'CONFIG_NTSYNC'),
                 ('MGLRU', 'CONFIG_LRU_GEN'), ('MGLRU 默认启用', 'CONFIG_LRU_GEN_ENABLED'))],
-            'kpm': ('普通版无；KPatch 实验补丁源码 ' + kpatch_sha[:12]
-                    if re.fullmatch(r'[a-fA-F0-9]{40}', kpatch_sha) else '未知（KPatch 源码记录缺失）'),
+            'kpm': kpatch_sha if re.fullmatch(r'[a-fA-F0-9]{40}', kpatch_sha) else '',
             'baka': baka, 'susfs': susfs_version.group(1) if susfs_version else '未知'}
 
 
@@ -238,9 +237,20 @@ def rich_link(url, text):
     return {'type': 'url', 'text': truncate(str(text), 160), 'url': url}
 
 
-def rich_table(rows):
-    return {'type': 'table', 'cells': [[{'align': 'left', 'valign': 'top',
-            'text': truncate(str(value), 240)} for value in row] for row in rows]}
+def rich_status(value):
+    style = ('success' if value in ('启用 (y)', '模块 (m)') else
+             'danger' if value == '禁用 (n)' else None)
+    if style:
+        return {'type': 'button', 'button': {'text': value, 'style': style, 'disabled': {}}}
+    return value
+
+
+def rich_table(rows, header=False):
+    return {'type': 'table', 'is_bordered': True, 'is_compact': True,
+            'cells': [[dict({'align': 'left', 'valign': 'top',
+                'text': truncate(value, 80) if isinstance(value, str) else value},
+                **({'is_header': True} if header and i == 0 else {}))
+                for value in row] for i, row in enumerate(rows)]}
 
 
 def notification_blocks(run, repo, commit, jobs, artifacts, files, notes, snapshot):
@@ -254,30 +264,34 @@ def notification_blocks(run, repo, commit, jobs, artifacts, files, notes, snapsh
     blocks = [{'type': 'document', 'document': {'type': 'document', 'media': f'attach://file{i}'}}
               for i in range(len(files))]
     blocks.append(rich_table([
-        ('Kernel', snapshot['kernel']), ('Source', sha),
-        ('Branch', run.get('head_branch') or '未知'),
-        ('Toolchain', '未知（实际编译版本请查看 Workflow 日志）'), ('LTO', snapshot['lto'])]))
-    blocks.append(rich_table([('功能（源码配置，非启动验证）', '状态（普通 / KPatch 共用源码）'),
-                              *snapshot['features'], ('KPM', snapshot['kpm'])]))
+        ('Kernel', snapshot['kernel']), ('Source', rich_link(f'{base}/commit/{sha}', sha[:12])),
+        ('Toolchain', '未记录'), ('LTO', snapshot['lto'])]))
+    kpm = (['仅修补版 · ', {'type': 'marked', 'text': '实验'}] if snapshot['kpm'] else '未知')
+    blocks.append(rich_table([('功能', '状态'),
+        *((name, rich_status(value)) for name, value in snapshot['features']), ('KPM', kpm)], header=True))
     baka = snapshot['baka']
     blocks.extend([
         {'type': 'paragraph', 'text': rich_link('https://github.com/Baka-SU/BakaSU' +
-            ('/tree/' + baka if baka else ''), 'BakaSU: ' + (baka[:12] + '（固定源码 SHA）' if baka else '未知'))},
+            ('/tree/' + baka if baka else ''), 'BakaSU: ' + (baka[:12] if baka else '未知'))},
         {'type': 'paragraph', 'text': rich_link(f'{base}/blob/{sha}/include/linux/susfs.h',
                                                'SUSFS: ' + snapshot['susfs'])}])
     start = datetime.datetime.fromisoformat(run['run_started_at'].replace('Z', '+00:00'))
     end = datetime.datetime.fromisoformat(run['updated_at'].replace('Z', '+00:00'))
     seconds = max(0, int((end - start).total_seconds()))
     status = {'success': '成功 / SUCCESS', 'failure': '失败 / FAILURE', 'cancelled': '取消 / CANCELLED'}[run['conclusion']]
-    blocks.append({'type': 'paragraph', 'text': truncate(
-        f"Branch: {run.get('head_branch') or '未知'} · CI #{run_id} / attempt {attempt} · {status} · "
-        f'{seconds//60}m {seconds%60}s · {len(files)}/2 release', 400)})
+    blocks.append({'type': 'paragraph', 'text':
+        f"Branch: {truncate(run.get('head_branch') or '未知', 60)} · CI #{run_id}/{attempt} · {status} · "
+        f'{seconds//60}m {seconds%60}s · {len(files)}/2 release'})
     meta = commit['commit']
     blocks.append({'type': 'pre', 'text': f"Commit: {sha}\nAuthor: " +
                    truncate(str(meta.get('author', {}).get('name', '未知')), 100) + '\n\n' +
                    truncate(meta['message'], 1800)})
     blocks.extend([{'type': 'paragraph', 'text': rich_link(compare, 'Compare')},
                    {'type': 'paragraph', 'text': rich_link(run_url, 'Workflow / Logs')}])
+    if snapshot['kpm']:
+        blocks.append({'type': 'paragraph', 'text': rich_link(
+            'https://github.com/ZHYxulei/KPatch-Next-EXP/tree/' + snapshot['kpm'],
+            'KPatch: ' + snapshot['kpm'][:12])})
     # 大量产物时保留统一入口和 debug 链接，限制消息总大小。
     selected = artifacts if len(artifacts) <= 12 else [a for a in artifacts
                 if a['name'] == f'miro-kernel-ultra-debug-{run_id}'][:1]
@@ -291,7 +305,7 @@ def notification_blocks(run, repo, commit, jobs, artifacts, files, notes, snapsh
             state += ' · oversize'
         blocks.append({'type': 'paragraph', 'text': rich_link(
             f"{base}/actions/runs/{run_id}/artifacts/{int(item['id'])}", truncate(item['name'], 100) + state)})
-    blocks.append({'type': 'paragraph', 'text': 'Debug/SHA256/symbols/logs 仅链接；GitHub 下载需登录，有保留期限。源码配置非最终 .config，非启动验证。'})
+    blocks.append({'type': 'paragraph', 'text': '源码配置非最终 .config，非启动验证；普通版无 KPM，修补版实验。未知含未显式配置或记录缺失；工具链见日志。Debug/SHA256/symbols/logs 仅链接，下载需登录且有保留期限。'})
     for job in [j for j in jobs if j.get('conclusion') in
                 ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required')][:4]:
         blocks.append({'type': 'paragraph', 'text': rich_link(
